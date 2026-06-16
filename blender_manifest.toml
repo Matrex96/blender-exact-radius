@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "exact_radius"
-version = "1.6.0"
+version = "1.7.0"
 name = "Exact Radius"
 tagline = "Make a selected ring of vertices an exact-radius circle"
 maintainer = "Patrick"

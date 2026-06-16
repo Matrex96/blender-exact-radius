@@ -42,10 +42,10 @@ or a partial arc, it just works.
 
 ## Preferences
 
-- **Enable Edit-Mode hotkey** — on by default.
-- **Shortcut** — pick from a dropdown. The *free* combos (`Alt+R`, `Ctrl+Alt+R`,
-  `Alt+Shift+R`) touch nothing in your keymap. The *overrides* option (`Shift+W`)
-  reversibly disables Blender's default Bend while the add-on is enabled.
+- **Shortcut** — a fully editable hotkey field (default **Alt+R** in Edit Mode).
+  Click the key field and press your own combination to rebind it, or uncheck the
+  box to disable it. It's the standard Blender keymap widget, so it behaves
+  exactly like the ones in the Keymap preferences.
 
 ## Install
 

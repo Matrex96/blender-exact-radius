@@ -2,7 +2,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick",
-    "version": (1, 6, 0),
+    "version": (1, 7, 0),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -17,8 +17,9 @@ import bmesh
 import ast
 import operator as _operator
 import numpy as np
+import rna_keymap_ui
 from mathutils import Vector
-from bpy.props import FloatProperty, EnumProperty, BoolProperty
+from bpy.props import FloatProperty, EnumProperty
 
 # A selection is rejected as "not a circle" beyond these limits (see _circle_error)
 PLANARITY_MAX = 0.25    # how far out of a single plane the points may sit
@@ -50,13 +51,6 @@ def _safe_eval(expr):
     try:
         return float(_eval_node(ast.parse(expr, mode='eval').body))
     except Exception:
-        return None
-
-
-def _prefs():
-    try:
-        return bpy.context.preferences.addons[__name__].preferences
-    except (KeyError, AttributeError):
         return None
 
 
@@ -260,105 +254,34 @@ def _menu(self, context):
     self.layout.operator(MESH_OT_exact_radius.bl_idname, icon='MESH_CIRCLE')
 
 
-# (keymap, keymap_item) we created in the USER keyconfig
-addon_keymap_refs = []
-# default items we temporarily disabled (e.g. Bend on Shift+W)
-_deactivated = []
-
-# Selectable shortcuts (Edit Mode / 'Mesh' keymap).
-# id -> (key, ctrl, alt, shift, label, conflicting idname to disable or None)
-# The "free" ones touch nothing; an "overrides" one reversibly disables the
-# clashing default while the addon is enabled.
-_HOTKEYS = {
-    'ALT_R':       ('R', False, True,  False, "Alt+R  (free)", None),
-    'CTRL_ALT_R':  ('R', True,  True,  False, "Ctrl+Alt+R  (free)", None),
-    'ALT_SHIFT_R': ('R', False, True,  True,  "Alt+Shift+R  (free)", None),
-    'SHIFT_W':     ('W', False, False, True,  "Shift+W  (overrides Bend)", 'transform.bend'),
-}
-_HOTKEY_ITEMS = [(k, v[4], "") for k, v in _HOTKEYS.items()]
+# --- Keymap: one user-editable shortcut in the addon keyconfig ---
+# Registered in the addon keyconfig so the preferences can show it as an
+# editable hotkey widget (rna_keymap_ui.draw_kmi) — the user can rebind it to
+# any combination they like, or disable it. Default: Alt+R in Edit Mode.
+addon_keymaps = []
 
 
-def _km_match(k, key, ctrl, alt, shift):
-    return (k.type == key and bool(k.ctrl) == ctrl and bool(k.alt) == alt
-            and bool(k.shift) == shift and not k.oskey)
-
-
-def _register_keymap():
-    """Bind the chosen shortcut in the USER 'Mesh' keymap, if enabled.
-    Added to the User keymap (fires reliably); an overriding choice reversibly
-    deactivates the clashing default while the addon is on."""
-    p = _prefs()
+def register_keymap():
     wm = bpy.context.window_manager
-    kc = wm.keyconfigs.user
-    km = kc.keymaps.get('Mesh') if kc else None
-    if not km:
+    kc = wm.keyconfigs.addon
+    if not kc:
         return
-    # clear our own leftover items first (clean slate across reloads / upgrades)
-    removed_own = False
-    for k in [k for k in km.keymap_items
-              if k.idname == MESH_OT_exact_radius.bl_idname]:
-        km.keymap_items.remove(k)
-        removed_own = True
-    # heal a Bend that an old auto-Shift+W version disabled (no-op on fresh install)
-    if removed_own:
-        for k in km.keymap_items:
-            if (_km_match(k, 'W', False, False, True)
-                    and k.idname == 'transform.bend' and not k.active):
-                k.active = True
-    if not p or not p.use_hotkey:
-        return
-    key, ctrl, alt, shift, _label, conflict = _HOTKEYS.get(p.hotkey,
-                                                           _HOTKEYS['ALT_R'])
-    if conflict:
-        for k in km.keymap_items:
-            if (_km_match(k, key, ctrl, alt, shift)
-                    and k.idname == conflict and k.active):
-                k.active = False
-                _deactivated.append(k)
-    kmi = km.keymap_items.new(MESH_OT_exact_radius.bl_idname, key, 'PRESS',
-                              ctrl=ctrl, alt=alt, shift=shift)
-    addon_keymap_refs.append((km, kmi))
+    km = kc.keymaps.new(name='Mesh', space_type='EMPTY')
+    kmi = km.keymap_items.new(MESH_OT_exact_radius.bl_idname, 'R', 'PRESS', alt=True)
+    addon_keymaps.append((km, kmi))
 
 
-def _unregister_keymap():
-    for km, kmi in addon_keymap_refs:
+def unregister_keymap():
+    for km, kmi in addon_keymaps:
         try:
             km.keymap_items.remove(kmi)
         except Exception:
             pass
-    addon_keymap_refs.clear()
-    for k in _deactivated:
-        try:
-            k.active = True  # restore the default we disabled (e.g. Bend)
-        except Exception:
-            pass
-    _deactivated.clear()
-
-
-def _update_keymap(self, context):
-    """Re-apply the keymap when a preference changes."""
-    _unregister_keymap()
-    _register_keymap()
+    addon_keymaps.clear()
 
 
 class EXACTRADIUS_AP_prefs(bpy.types.AddonPreferences):
     bl_idname = __name__
-
-    use_hotkey: BoolProperty(
-        name="Enable Edit-Mode hotkey",
-        description="Bind Exact Radius to a shortcut in Edit Mode",
-        default=True,
-        update=_update_keymap,
-    )
-    hotkey: EnumProperty(
-        name="Shortcut",
-        description=("Which key triggers Exact Radius. The 'free' ones touch "
-                     "nothing; an 'overrides' one reversibly disables the "
-                     "clashing default while the addon is enabled"),
-        items=_HOTKEY_ITEMS,
-        default='ALT_R',
-        update=_update_keymap,
-    )
 
     def draw(self, context):
         layout = self.layout
@@ -386,12 +309,21 @@ class EXACTRADIUS_AP_prefs(bpy.types.AddonPreferences):
 
         box = layout.box()
         box.label(text="Shortcut", icon='PREFERENCES')
-        box.prop(self, "use_hotkey")
-        sub = box.row()
-        sub.enabled = self.use_hotkey
-        sub.prop(self, "hotkey")
-        box.label(text="'free' keys never touch your keymap; the 'overrides' option "
-                       "disables the clashing default (reversible).")
+        box.label(text="Click the key field and press your own combo · "
+                       "uncheck the box to disable")
+        wm = context.window_manager
+        kc = wm.keyconfigs.addon
+        km = kc.keymaps.get('Mesh') if kc else None
+        drawn = False
+        if km:
+            for kmi in km.keymap_items:
+                if kmi.idname == MESH_OT_exact_radius.bl_idname:
+                    box.context_pointer_set("keymap", km)
+                    rna_keymap_ui.draw_kmi([], kc, km, kmi, box, 0)
+                    drawn = True
+                    break
+        if not drawn:
+            box.label(text="Restart Blender to edit the shortcut.", icon='ERROR')
 
 
 classes = (EXACTRADIUS_AP_prefs, MESH_OT_exact_radius)
@@ -401,11 +333,11 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.VIEW3D_MT_edit_mesh_vertices.append(_menu)
-    _register_keymap()
+    register_keymap()
 
 
 def unregister():
-    _unregister_keymap()
+    unregister_keymap()
     bpy.types.VIEW3D_MT_edit_mesh_vertices.remove(_menu)
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
