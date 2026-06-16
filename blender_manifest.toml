@@ -1,0 +1,28 @@
+schema_version = "1.0.0"
+
+id = "exact_radius"
+version = "1.6.0"
+name = "Exact Radius"
+tagline = "Make a selected ring of vertices an exact-radius circle"
+maintainer = "Patrick"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+tags = ["Mesh", "Modeling"]
+
+# website = "https://github.com/<user>/exact-radius"   # TODO: GitHub-Mirror eintragen
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/*.zip",
+  "*.blend1",
+  "/docs/",
+  "/.gitignore",
+]
