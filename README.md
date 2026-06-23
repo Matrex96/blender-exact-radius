@@ -15,6 +15,7 @@ Non-destructive, undo-able, no scaling or applying.
 |------|--------------|----------------|
 | **Scale (S + number)** | the usual way to resize a ring | scales by a *factor*, not to an absolute radius — you'd need to know the current size and compute the ratio |
 | **LoopTools → Circle** | makes a vertex/edge loop circular | needs a clean ordered loop, "Custom Radius" is fiddly, no proper arc / partial-circle support |
+| **Cast modifier** | pushes a mesh toward a circle/sphere shape | object-level and factor-based; not an Edit-Mode selection with a fitted center and an exact radius |
 | **To Sphere (Shift+Alt+S)** | morphs selection toward a sphere | spherical and factor-based, not an exact circle radius |
 
 **Exact Radius** is the thing you actually want when you reach for Scale: type a
