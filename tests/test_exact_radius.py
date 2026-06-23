@@ -228,6 +228,89 @@ check("falls back to active when objects_in_mode empty",
       [o.name for o in ER._edit_meshes(_FakeCtx([], _a))] == ['A'])
 check("nothing in edit mode -> empty", ER._edit_meshes(_FakeCtx([], None)) == [])
 
+# --- 8. real operator via bpy.ops in edit mode --------------------------------
+# Run the ACTUAL registered operator end-to-end. This is the layer that broke in
+# v1.9.0 (invoke/execute created the edit bmesh inline without keeping a
+# reference, so it was garbage-collected mid-use -> "BMVert has been removed").
+# The pure-function tests above never caught it because they hold the bmesh in a
+# local var. These do not — they go through the operator like a real key press.
+section("operator integration (bpy.ops, edit mode)")
+
+
+def _ring_object(name, n, r, loc=(0, 0, 0)):
+    me = bpy.data.meshes.new(name); o = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(o)
+    b = bmesh.new(); ring_verts(b, n, r); b.to_mesh(me); b.free()
+    o.location = loc
+    return o
+
+
+def _deselect_all():
+    for ob in bpy.context.view_layer.objects:
+        ob.select_set(False)
+
+
+def _ring_radius(o):
+    vs = o.data.vertices
+    return sum(v.co.length for v in vs) / len(vs)
+
+
+def _edit_select_all(objs, active):
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = active
+    bpy.ops.object.mode_set(mode='EDIT')
+    for o in objs:
+        b = bmesh.from_edit_mesh(o.data)
+        for v in b.verts:
+            v.select = True
+        b.select_flush(True); bmesh.update_edit_mesh(o.data)
+
+
+def _run_operator_on(objs, active, radius):
+    """Run the real operator on objs in edit mode; (result, error_or_None).
+    Catches exceptions (e.g. the v1.9.0 ReferenceError) so they surface as a
+    clean FAIL instead of aborting the whole suite."""
+    res = err = None
+    try:
+        _edit_select_all(objs, active)
+        res = bpy.ops.mesh.exact_radius('EXEC_DEFAULT', radius=radius)
+    except Exception as e:
+        err = repr(e)
+    finally:
+        if bpy.context.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+    return res, err
+
+
+if bpy.context.mode != 'OBJECT':
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+# single object through the real operator
+_deselect_all()
+o1 = _ring_object("ER_int_1", 16, 1.0)
+res, err = _run_operator_on([o1], o1, 0.5)
+check("op single: no exception", err is None, err or "")
+check("op single: FINISHED + ring set to 0.5",
+      res == {'FINISHED'} and abs(_ring_radius(o1) - 0.5) < 1e-3,
+      "res=%s r=%.4f" % (res, _ring_radius(o1)))
+
+# multi-object through the real operator
+_deselect_all()
+oa = _ring_object("ER_int_a", 16, 1.0, (0, 0, 0))
+ob = _ring_object("ER_int_b", 24, 2.0, (8, 0, 0))
+res, err = _run_operator_on([oa, ob], oa, 0.3)
+check("op multi: no exception", err is None, err or "")
+check("op multi: FINISHED", res == {'FINISHED'}, "%s" % (res,))
+check("op multi: active ring set to 0.3", abs(_ring_radius(oa) - 0.3) < 1e-3, "r=%.4f" % _ring_radius(oa))
+check("op multi: OTHER ring set to 0.3", abs(_ring_radius(ob) - 0.3) < 1e-3, "r=%.4f" % _ring_radius(ob))
+
+for _o in (o1, oa, ob):
+    bpy.data.objects.remove(_o, do_unlink=True)
+
 # --- summary ------------------------------------------------------------------
 nf = _results.count(False)
 print("\n=== %d/%d passed, %d FAILED  (Blender %s) ===" % (

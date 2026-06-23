@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick",
-    "version": (1, 9, 0),
+    "version": (1, 9, 1),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -378,13 +378,14 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         total = 0
         first_r = None
         for o in _edit_meshes(context):
-            valid = _valid_circles(_find_circles(_selected_verts(bmesh.from_edit_mesh(o.data))))
+            bm = bmesh.from_edit_mesh(o.data)   # keep a ref so its verts stay alive
+            valid = _valid_circles(_find_circles(_selected_verts(bm)))
             total += len(valid)
             if first_r is None and valid:
                 first_r = round(valid[0][1][2], 4)
         if total == 0:
-            obj = context.edit_object
-            sel = _selected_verts(bmesh.from_edit_mesh(obj.data))
+            bm = bmesh.from_edit_mesh(context.edit_object.data)
+            sel = _selected_verts(bm)
             self.report({'ERROR'}, _circle_error(sel, _fit_circle(sel)) or
                         "Select at least one ring of vertices forming a circle")
             return {'CANCELLED'}
@@ -438,7 +439,8 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         # 3D-cursor center applies (only meaningful for a single circle total)
         total_valid = total_circles = 0
         for o in meshes:
-            circles = _find_circles(_selected_verts(bmesh.from_edit_mesh(o.data)))
+            bm = bmesh.from_edit_mesh(o.data)   # keep a ref so its verts stay alive
+            circles = _find_circles(_selected_verts(bm))
             total_valid += len(_valid_circles(circles))
             total_circles += len(circles)
         if total_valid == 0:
