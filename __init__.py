@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Patrick
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick",
-    "version": (1, 7, 0),
+    "version": (1, 8, 1),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
-        "Make a selected ring of vertices a perfect circle of an exact radius — "
-        "at any orientation, for full circles, holes and partial arcs."
+        "Make selected rings of vertices perfect circles of an exact radius — "
+        "at any orientation, for full circles, holes and partial arcs. Sets "
+        "many circles at once and reports how many were set."
     ),
     "category": "Mesh",
 }
@@ -17,9 +19,8 @@ import bmesh
 import ast
 import operator as _operator
 import numpy as np
-import rna_keymap_ui
 from mathutils import Vector
-from bpy.props import FloatProperty, EnumProperty
+from bpy.props import FloatProperty, EnumProperty, BoolProperty
 
 # A selection is rejected as "not a circle" beyond these limits (see _circle_error)
 PLANARITY_MAX = 0.25    # how far out of a single plane the points may sit
@@ -87,6 +88,8 @@ def _fit_circle(verts):
     except np.linalg.LinAlgError:
         return None
     planarity = float(s[2] / (s[0] + 1e-12))
+    if s[0] < 1e-12 or (s[1] / s[0]) < 0.02:
+        return None              # points are essentially collinear — not a circle
     e1, e2, normal = Vector(vt[0]), Vector(vt[1]), Vector(vt[2])
     # project the points onto the plane's 2D basis (e1, e2)
     u = Q @ vt[0]
@@ -121,6 +124,160 @@ def _circle_error(verts, fit):
     if rel_residual > RESIDUAL_MAX:
         return "Selection is not a circle — select a ring or arc of vertices"
     return None
+
+
+def _connected_groups(verts):
+    """Split a vertex selection into edge-connected components.
+
+    Separate circles (e.g. a dozen holes) come apart here — each ring is its own
+    component, so they are fitted and resized independently.
+    """
+    sel = set(verts)
+    seen = set()
+    groups = []
+    for start in verts:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack = [start]
+        comp = []
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for e in v.link_edges:
+                o = e.other_vert(v)
+                if o in sel and o not in seen:
+                    seen.add(o)
+                    stack.append(o)
+        groups.append(comp)
+    return groups
+
+
+def _is_circle(verts):
+    fit = _fit_circle(verts)
+    return fit is not None and _circle_error(verts, fit) is None
+
+
+def _bisect_by_plane(verts):
+    """Split a component into parallel clusters along its stacking axis.
+
+    Pulls apart rings stacked in one connected piece (several cross-sections of a
+    tube, the two ends of a funnel) — for any number of rings, evenly spaced or
+    not. Each principal axis is cut at every gap of at least half its largest
+    gap, and scored by how many of the resulting clusters are themselves clean
+    circles: the true stacking axis turns into whole rings, while the other axes
+    only slice the rings into arcs — so the axis that yields real circles wins,
+    regardless of the ring count. A filled face/blob yields no circles and keeps
+    its span filled, so it is left unsplit. Returns >= 2 vertex groups or None.
+    """
+    if len(verts) < 6:
+        return None
+    vlist = list(verts)
+    pts = np.array([v.co[:] for v in vlist], dtype=float)
+    Q = pts - pts.mean(axis=0)
+    try:
+        _, _s, vt = np.linalg.svd(Q, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return None
+
+    def axis_split(axis):
+        proj = Q @ axis
+        order = np.argsort(proj)
+        gaps = np.diff(proj[order])
+        spread = float(proj[order[-1]] - proj[order[0]])
+        if spread < 1e-9 or gaps.size == 0:
+            return None
+        tiny = 1e-9 * spread
+        # Rank the gaps largest-first and find the "knee": the count of cuts at
+        # which the gap sizes drop off most sharply. For stacked rings the big
+        # ring-to-ring gaps tower over the ~0 within-ring gaps, so the knee lands
+        # exactly between the rings (any number, evenly spaced or not). A face or
+        # a single ring has no such drop, so it does not split cleanly.
+        ranked = sorted(range(gaps.size), key=lambda j: float(gaps[j]), reverse=True)
+        gv = [float(gaps[j]) for j in ranked]
+        if gv[0] < tiny:
+            return None
+        best_i, best_ratio = 1, 0.0
+        for i in range(1, gaps.size):
+            ratio = gv[i - 1] / max(gv[i], tiny)
+            if ratio > best_ratio:
+                best_ratio, best_i = ratio, i
+        cut = sorted(ranked[:best_i])
+        sep = float(sum(gaps[j] for j in cut)) / spread
+        bounds = [-1] + cut + [gaps.size]
+        groups = []
+        for a in range(len(bounds) - 1):
+            idx = order[bounds[a] + 1: bounds[a + 1] + 1]
+            if idx.size < 3:              # a sliver cluster -> not a clean split
+                return None
+            groups.append([vlist[k] for k in idx])
+        if len(groups) < 2:
+            return None
+        clean = sum(1 for g in groups if _is_circle(g))
+        return (clean, sep), groups
+
+    best = None
+    for axis in vt:
+        res = axis_split(axis)
+        if res is None:
+            continue
+        key, groups = res
+        if best is None or key > best[0]:
+            best = (key, groups)
+    # Only split when at least one cluster is itself a real circle — that is what
+    # tells the true stacking axis (whole rings) from an axis that merely slices
+    # the rings into arcs, and it keeps blobs/faces (no circles) unsplit.
+    if best is None or best[0][0] == 0:
+        return None
+    return best[1]
+
+
+def _split_leaves(verts, depth=0):
+    """Recursively bisect a component into leaf groups (for stacked rings).
+
+    Stops descending as soon as a group is itself a clean circle, so a single
+    ring is never chopped into arcs.
+    """
+    fit = _fit_circle(verts)
+    if (fit is not None and _circle_error(verts, fit) is None) or depth >= 8:
+        return [verts]
+    parts = _bisect_by_plane(verts)
+    if not parts:
+        return [verts]
+    out = []
+    for p in parts:
+        out.extend(_split_leaves(p, depth + 1))
+    return out
+
+
+def _find_circles(sel):
+    """Find every distinct circle in the selection.
+
+    Returns a list of (verts, fit); fit is None / not-a-circle for a group that
+    cannot be used (counted as "skipped"). Separate rings split by connectivity;
+    rings stacked in one piece split by plane clustering.
+    """
+    circles = []
+    for comp in _connected_groups(sel):
+        fit = _fit_circle(comp)
+        if fit is not None and _circle_error(comp, fit) is None:
+            circles.append((comp, fit))           # one clean circle
+            continue
+        found = []                                # peel apart stacked rings
+        for leaf in _split_leaves(comp):
+            f = _fit_circle(leaf)
+            if f is not None and _circle_error(leaf, f) is None:
+                found.append((leaf, f))
+        if found:
+            circles.extend(found)
+        else:
+            circles.append((comp, fit))           # one un-usable group = 1 skip
+    return circles
+
+
+def _valid_circles(circles):
+    return [(vs, fit) for vs, fit in circles
+            if fit is not None and _circle_error(vs, fit) is None]
 
 
 class MESH_OT_exact_radius(bpy.types.Operator):
@@ -165,7 +322,9 @@ class MESH_OT_exact_radius(bpy.types.Operator):
             shown = f"{self._typed} = {val:.4g}" if val is not None else f"{self._typed} …"
         else:
             shown = f"{self._current:.4g} (current)"
-        txt = (f"Exact Radius: {shown}    "
+        n = getattr(self, "_count", 1)
+        head = "Exact Radius" + (f"  ({n} circles)" if n > 1 else "")
+        txt = (f"{head}: {shown}    "
                "[type a value or math, e.g. 20/2 · Enter = apply · Esc = cancel]")
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
@@ -181,13 +340,15 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         obj = context.edit_object
         bm = bmesh.from_edit_mesh(obj.data)
         sel = _selected_verts(bm)
-        fit = _fit_circle(sel)
-        err = _circle_error(sel, fit)
-        if err:
-            self.report({'ERROR'}, err)
+        valid = _valid_circles(_find_circles(sel))
+        if not valid:
+            # fall back to the single-selection reason for a helpful message
+            self.report({'ERROR'}, _circle_error(sel, _fit_circle(sel)) or
+                        "Select at least one ring of vertices forming a circle")
             return {'CANCELLED'}
-        # pre-fill with the fitted radius
-        self._current = round(fit[2], 4)
+        # pre-fill with the first circle's fitted radius; remember how many
+        self._count = len(valid)
+        self._current = round(valid[0][1][2], 4)
         self.radius = self._current
         self._typed = ""
         self._set_header(context)
@@ -225,28 +386,45 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         self._set_header(context)
         return {'RUNNING_MODAL'}
 
+    def cancel(self, context):
+        # always clear the viewport header, even on an external modal teardown
+        self._clear_header(context)
+
     def execute(self, context):
         obj = context.edit_object
         bm = bmesh.from_edit_mesh(obj.data)
         sel = _selected_verts(bm)
-        fit = _fit_circle(sel)
-        err = _circle_error(sel, fit)
-        if err:
-            self.report({'ERROR'}, err)
+        circles = _find_circles(sel)
+        valid = _valid_circles(circles)
+        if not valid:
+            self.report({'ERROR'},
+                        "Selection is not a circle — select a ring of vertices")
             return {'CANCELLED'}
-        center, normal, _r, _rel, _pl = fit
-        if self.center_mode == 'CURSOR':
-            center = _local_cursor(context, obj)
-        moved = 0
-        for v in sel:
-            d = v.co - center
-            radial = d - d.dot(normal) * normal   # flatten onto the circle plane
-            rl = radial.length
-            if rl > 1e-9:
-                v.co = center + radial * (self.radius / rl)
-                moved += 1
+        # 3D-cursor center only makes sense for a single circle
+        cursor = (_local_cursor(context, obj)
+                  if self.center_mode == 'CURSOR' and len(valid) == 1 else None)
+        for verts, fit in valid:
+            center, normal = fit[0], fit[1]
+            if cursor is not None:
+                center = cursor
+            for v in verts:
+                d = v.co - center
+                radial = d - d.dot(normal) * normal   # flatten onto circle plane
+                rl = radial.length
+                if rl > 1e-9:
+                    v.co = center + radial * (self.radius / rl)
         bmesh.update_edit_mesh(obj.data)
-        self.report({'INFO'}, f"{moved} verts set to radius {self.radius:.4g}")
+        n = len(valid)
+        skipped = len(circles) - n
+        r = self.radius
+        note = ("  (3D-cursor center applies to a single ring only)"
+                if self.center_mode == 'CURSOR' and n > 1 else "")
+        if skipped:                                   # yellow: not all were circles
+            self.report({'WARNING'}, f"{n} set / {skipped} skipped{note}")
+        elif n == 1:
+            self.report({'INFO'}, f"Circle set to radius {r:.4g}")
+        else:
+            self.report({'INFO'}, f"{n} circles set to radius {r:.4g}{note}")
         return {'FINISHED'}
 
 
@@ -254,21 +432,55 @@ def _menu(self, context):
     self.layout.operator(MESH_OT_exact_radius.bl_idname, icon='MESH_CIRCLE')
 
 
-# --- Keymap: one user-editable shortcut in the addon keyconfig ---
-# Registered in the addon keyconfig so the preferences can show it as an
-# editable hotkey widget (rna_keymap_ui.draw_kmi) — the user can rebind it to
-# any combination they like, or disable it. Default: Alt+R in Edit Mode.
+# --- Keymap: a simple preset dropdown in the addon keyconfig ---
+# A handful of safe, conflict-free combos (none clash with Blender's mesh keys)
+# plus "Disabled" — picked from a plain dropdown in the preferences, so there is
+# no fiddly raw keymap widget to accidentally rebind onto the mouse.
 addon_keymaps = []
 
+# id -> (key or None, ctrl, alt, shift, label)
+_SHORTCUTS = {
+    'ALT_R':       ('R', False, True,  False, "Alt + R"),
+    'CTRL_ALT_R':  ('R', True,  True,  False, "Ctrl + Alt + R"),
+    'ALT_SHIFT_R': ('R', False, True,  True,  "Alt + Shift + R"),
+    'NONE':        (None, False, False, False, "Disabled"),
+}
+_SHORTCUT_ITEMS = [
+    ('ALT_R', "Alt + R", "Default shortcut"),
+    ('CTRL_ALT_R', "Ctrl + Alt + R", "Alternative shortcut"),
+    ('ALT_SHIFT_R', "Alt + Shift + R", "Alternative shortcut"),
+    ('NONE', "Disabled", "No shortcut — use the Vertex menu instead"),
+]
 
-def register_keymap():
+
+def _apply_shortcut(key_id):
+    """Bind exactly one keymap item (or none) for the chosen preset."""
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon
     if not kc:
         return
-    km = kc.keymaps.new(name='Mesh', space_type='EMPTY')
-    kmi = km.keymap_items.new(MESH_OT_exact_radius.bl_idname, 'R', 'PRESS', alt=True)
+    km = kc.keymaps.get('Mesh') or kc.keymaps.new(name='Mesh', space_type='EMPTY')
+    for kmi in list(km.keymap_items):           # clear any previous binding(s)
+        if kmi.idname == MESH_OT_exact_radius.bl_idname:
+            km.keymap_items.remove(kmi)
+    addon_keymaps.clear()
+    key, ctrl, alt, shift, _label = _SHORTCUTS.get(key_id, _SHORTCUTS['ALT_R'])
+    if key is None:
+        return                                  # "Disabled"
+    kmi = km.keymap_items.new(MESH_OT_exact_radius.bl_idname, key, 'PRESS',
+                              ctrl=ctrl, alt=alt, shift=shift)
     addon_keymaps.append((km, kmi))
+
+
+def _current_shortcut():
+    try:
+        return bpy.context.preferences.addons[__name__].preferences.shortcut
+    except Exception:
+        return 'ALT_R'
+
+
+def register_keymap():
+    _apply_shortcut(_current_shortcut())
 
 
 def unregister_keymap():
@@ -280,50 +492,60 @@ def unregister_keymap():
     addon_keymaps.clear()
 
 
+def _update_shortcut(self, context):
+    _apply_shortcut(self.shortcut)
+
+
 class EXACTRADIUS_AP_prefs(bpy.types.AddonPreferences):
     bl_idname = __name__
+
+    shortcut: EnumProperty(
+        name="Shortcut",
+        description="Keyboard shortcut for Exact Radius (Edit Mode)",
+        items=_SHORTCUT_ITEMS,
+        default='ALT_R',
+        update=_update_shortcut,
+    )
+    show_help: BoolProperty(
+        name="How to use",
+        description="Show a short how-to for Exact Radius",
+        default=False,
+    )
 
     def draw(self, context):
         layout = self.layout
 
-        box = layout.box()
-        box.label(text="Make a selected ring of vertices a perfect circle",
-                  icon='MESH_CIRCLE')
-        box.label(text="Exact radius, at any orientation. There is no pop-up "
-                       "window — it all happens right on the shortcut.")
+        # The shortcut is the one setting people come here for — keep it on top.
+        row = layout.row(align=True)
+        row.label(text="Shortcut (Edit Mode)", icon='PREFERENCES')
+        row.prop(self, "shortcut", text="")
 
+        # Everything else is just help — collapsed by default so it is not a
+        # wall of text. Click to expand.
         box = layout.box()
-        box.label(text="How to use", icon='INFO')
-        col = box.column(align=True)
-        col.label(text="1.   In Edit Mode, select a ring of vertices")
-        col.label(text="       (a full circle, a hole, or part of one — an arc)")
-        col.label(text="2.   Press the shortcut   (or  Vertex menu > Exact Radius)")
-        col.label(text="3.   Type the radius, press Enter — done")
-        col.separator()
-        col.label(text="Good to know:")
-        col.label(text="       20/2     math works  (e.g. turn a diameter into a radius)")
-        col.label(text="       tilted / rotated circles just work")
-        col.label(text="       partial arcs work too  (the center is fitted)")
-        col.label(text="       Esc  cancels        F9  afterwards to set the center")
-        col.label(text="       a non-circle (whole face / mesh) shows an error")
-
-        box = layout.box()
-        box.label(text="Shortcut", icon='PREFERENCES')
-        box.label(text="Click the key field and press your own combo · "
-                       "uncheck the box to disable")
-        wm = context.window_manager
-        kc = wm.keyconfigs.addon
-        km = kc.keymaps.get('Mesh') if kc else None
-        drawn = False
-        if km:
-            for kmi in km.keymap_items:
-                if kmi.idname == MESH_OT_exact_radius.bl_idname:
-                    box.context_pointer_set("keymap", km)
-                    rna_keymap_ui.draw_kmi([], kc, km, kmi, box, 0)
-                    drawn = True
-                    break
-        if not drawn:
-            box.label(text="Restart Blender to edit the shortcut.", icon='ERROR')
+        box.prop(self, "show_help",
+                 text="How to use Exact Radius",
+                 icon='TRIA_DOWN' if self.show_help else 'TRIA_RIGHT',
+                 emboss=False)
+        if self.show_help:
+            col = box.column(align=True)
+            col.label(text="Make a selected ring of vertices a perfect circle of an",
+                      icon='MESH_CIRCLE')
+            col.label(text="exact radius, at any orientation — no pop-up, it happens "
+                           "right on the shortcut.")
+            col.separator()
+            col.label(text="1.   In Edit Mode, select a ring of vertices")
+            col.label(text="        (a full circle, a hole, or part of one — an arc)")
+            col.label(text="2.   Press the shortcut   (or  Vertex menu > Exact Radius)")
+            col.label(text="3.   Type the radius, press Enter — done")
+            col.separator()
+            col.label(text="Good to know:")
+            col.label(text="     •  select many rings at once — each gets the radius, "
+                           "with a count (e.g. 12 circles set)")
+            col.label(text="     •  20/2  math works  (turn a diameter into a radius)")
+            col.label(text="     •  tilted / rotated circles and partial arcs just work")
+            col.label(text="     •  Esc cancels  ·  F9 afterwards to set the center")
+            col.label(text="     •  a non-circle (whole face / mesh) shows an error")
 
 
 classes = (EXACTRADIUS_AP_prefs, MESH_OT_exact_radius)

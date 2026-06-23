@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "exact_radius"
-version = "1.7.0"
+version = "1.8.1"
 name = "Exact Radius"
-tagline = "Make a selected ring of vertices an exact-radius circle"
+tagline = "Make selected vertex rings exact-radius circles, many at once"
 maintainer = "Patrick"
 type = "add-on"
 
@@ -13,9 +13,14 @@ license = [
   "SPDX:GPL-3.0-or-later",
 ]
 
+copyright = [
+  "2026 Patrick",
+]
+
 tags = ["Mesh", "Modeling"]
 
-# website = "https://github.com/<user>/exact-radius"   # TODO: GitHub-Mirror eintragen
+# website: intentionally omitted — the source is hosted on a private Forgejo,
+# not a public URL. Set this only if a publicly reachable mirror is ever made.
 
 [build]
 paths_exclude_pattern = [
