@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "exact_radius"
-version = "1.8.1"
+version = "1.9.0"
 name = "Exact Radius"
 tagline = "Make selected vertex rings exact-radius circles, many at once"
 maintainer = "Patrick"
@@ -29,5 +29,6 @@ paths_exclude_pattern = [
   "/*.zip",
   "*.blend1",
   "/docs/",
+  "/tests/",
   "/.gitignore",
 ]

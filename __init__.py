@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick",
-    "version": (1, 8, 1),
+    "version": (1, 9, 0),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -280,6 +280,43 @@ def _valid_circles(circles):
             if fit is not None and _circle_error(vs, fit) is None]
 
 
+def _apply_radius(verts, center, normal, radius):
+    """Move each vert onto the circle of `radius` around center, in its plane."""
+    for v in verts:
+        d = v.co - center
+        radial = d - d.dot(normal) * normal       # flatten onto the circle plane
+        rl = radial.length
+        if rl > 1e-9:
+            v.co = center + radial * (radius / rl)
+
+
+def _resize_selection(bm, radius, cursor=None):
+    """Set every circle in this bmesh's selection to `radius`.
+
+    `cursor` (a local-space Vector) overrides the fitted center when given.
+    Returns (set_count, skipped_count); skipped are selected groups that are not
+    usable circles. This is the per-mesh building block the operator runs for
+    each object that is in edit mode.
+    """
+    circles = _find_circles(_selected_verts(bm))
+    valid = _valid_circles(circles)
+    for verts, fit in valid:
+        _apply_radius(verts, fit[0] if cursor is None else cursor, fit[1], radius)
+    return len(valid), len(circles) - len(valid)
+
+
+def _edit_meshes(context):
+    """Every mesh currently in edit mode (multi-object edit), active one first."""
+    objs = [o for o in (getattr(context, "objects_in_mode", None) or [])
+            if o.type == 'MESH']
+    active = context.edit_object
+    if active is not None and active.type == 'MESH':
+        if active in objs:
+            objs.remove(active)
+        objs.insert(0, active)              # active first → prefill from it
+    return objs
+
+
 class MESH_OT_exact_radius(bpy.types.Operator):
     """Make the selected ring of vertices a perfect circle of an exact radius.
 
@@ -336,19 +373,24 @@ class MESH_OT_exact_radius(bpy.types.Operator):
                 area.header_text_set(None)
 
     def invoke(self, context, event):
-        # validate first so a bad selection errors before the modal starts
-        obj = context.edit_object
-        bm = bmesh.from_edit_mesh(obj.data)
-        sel = _selected_verts(bm)
-        valid = _valid_circles(_find_circles(sel))
-        if not valid:
-            # fall back to the single-selection reason for a helpful message
+        # validate first (across all edited objects) so a bad selection errors
+        # before the modal starts
+        total = 0
+        first_r = None
+        for o in _edit_meshes(context):
+            valid = _valid_circles(_find_circles(_selected_verts(bmesh.from_edit_mesh(o.data))))
+            total += len(valid)
+            if first_r is None and valid:
+                first_r = round(valid[0][1][2], 4)
+        if total == 0:
+            obj = context.edit_object
+            sel = _selected_verts(bmesh.from_edit_mesh(obj.data))
             self.report({'ERROR'}, _circle_error(sel, _fit_circle(sel)) or
                         "Select at least one ring of vertices forming a circle")
             return {'CANCELLED'}
         # pre-fill with the first circle's fitted radius; remember how many
-        self._count = len(valid)
-        self._current = round(valid[0][1][2], 4)
+        self._count = total
+        self._current = first_r if first_r is not None else 1.0
         self.radius = self._current
         self._typed = ""
         self._set_header(context)
@@ -391,31 +433,27 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         self._clear_header(context)
 
     def execute(self, context):
-        obj = context.edit_object
-        bm = bmesh.from_edit_mesh(obj.data)
-        sel = _selected_verts(bm)
-        circles = _find_circles(sel)
-        valid = _valid_circles(circles)
-        if not valid:
+        meshes = _edit_meshes(context)
+        # count first (across all objects) to error out and to decide whether a
+        # 3D-cursor center applies (only meaningful for a single circle total)
+        total_valid = total_circles = 0
+        for o in meshes:
+            circles = _find_circles(_selected_verts(bmesh.from_edit_mesh(o.data)))
+            total_valid += len(_valid_circles(circles))
+            total_circles += len(circles)
+        if total_valid == 0:
             self.report({'ERROR'},
                         "Selection is not a circle — select a ring of vertices")
             return {'CANCELLED'}
-        # 3D-cursor center only makes sense for a single circle
-        cursor = (_local_cursor(context, obj)
-                  if self.center_mode == 'CURSOR' and len(valid) == 1 else None)
-        for verts, fit in valid:
-            center, normal = fit[0], fit[1]
-            if cursor is not None:
-                center = cursor
-            for v in verts:
-                d = v.co - center
-                radial = d - d.dot(normal) * normal   # flatten onto circle plane
-                rl = radial.length
-                if rl > 1e-9:
-                    v.co = center + radial * (self.radius / rl)
-        bmesh.update_edit_mesh(obj.data)
-        n = len(valid)
-        skipped = len(circles) - n
+        single = total_valid == 1
+        for o in meshes:
+            bm = bmesh.from_edit_mesh(o.data)
+            cursor = (_local_cursor(context, o)
+                      if self.center_mode == 'CURSOR' and single else None)
+            _resize_selection(bm, self.radius, cursor)
+            bmesh.update_edit_mesh(o.data)
+        n = total_valid
+        skipped = total_circles - total_valid
         r = self.radius
         note = ("  (3D-cursor center applies to a single ring only)"
                 if self.center_mode == 'CURSOR' and n > 1 else "")
