@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 Patrick
+# Copyright (C) 2026 Patrick Tiefenbacher
 bl_info = {
     "name": "Exact Radius",
-    "author": "Patrick",
+    "author": "Patrick Tiefenbacher",
     "version": (1, 9, 1),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",

@@ -4,7 +4,7 @@ id = "exact_radius"
 version = "1.9.1"
 name = "Exact Radius"
 tagline = "Make selected vertex rings exact-radius circles, many at once"
-maintainer = "Patrick"
+maintainer = "Patrick Tiefenbacher"
 type = "add-on"
 
 blender_version_min = "4.2.0"
@@ -14,7 +14,7 @@ license = [
 ]
 
 copyright = [
-  "2026 Patrick",
+  "2026 Patrick Tiefenbacher",
 ]
 
 tags = ["Mesh", "Modeling"]
