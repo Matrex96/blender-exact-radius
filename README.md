@@ -7,7 +7,7 @@ own plane and circle center, then sets every vertex to the radius you type.
 
 Non-destructive, undo-able, no scaling or applying.
 
-![demo](docs/demo.gif)
+<p align="center"><img src="docs/demo-editmode.gif" width="300" alt="Exact Radius demo"></p>
 
 ## Why not just use…?
 
