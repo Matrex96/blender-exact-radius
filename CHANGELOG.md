@@ -8,7 +8,7 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.9.1   | 2026-06-23 | — | not yet submitted |
+| 1.9.1   | 2026-06-23 | 2026-06-23 | submitted — awaiting moderation |
 
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
