@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "exact_radius"
-version = "1.9.1"
+version = "1.9.2"
 name = "Exact Radius"
 tagline = "Make selected vertex rings exact-radius circles, many at once"
 maintainer = "Patrick Tiefenbacher"
@@ -19,8 +19,7 @@ copyright = [
 
 tags = ["Mesh", "Modeling"]
 
-# website: intentionally omitted — the source is hosted on a private Forgejo,
-# not a public URL. Set this only if a publicly reachable mirror is ever made.
+website = "https://github.com/Matrex96/blender-exact-radius"
 
 [build]
 paths_exclude_pattern = [

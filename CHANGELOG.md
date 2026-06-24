@@ -8,11 +8,16 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
+| 1.9.2   | 2026-06-24 | — | built; upload as an update once 1.9.1 is approved |
 | 1.9.1   | 2026-06-23 | 2026-06-23 | submitted — awaiting moderation |
 
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
 ---
+
+## 1.9.2 — 2026-06-24
+- Add project `website` (public GitHub mirror) to the manifest, for source +
+  issue reporting.
 
 ## 1.9.1 — 2026-06-23
 - Fix: multi-object `invoke`/`execute` kept the edit-mode bmesh inline without a
