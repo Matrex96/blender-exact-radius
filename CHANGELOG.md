@@ -8,16 +8,35 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.9.2   | 2026-06-24 | — | built; upload as an update once 1.9.1 is approved |
+| 1.9.3   | 2026-06-25 | — | built; upload as an update once 1.9.1 is approved (supersedes 1.9.2) |
+| 1.9.2   | 2026-06-24 | — | superseded by 1.9.3 (not uploaded) |
 | 1.9.1   | 2026-06-23 | 2026-06-23 | submitted — awaiting moderation |
 
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
 ---
 
+## 1.9.3 — 2026-06-25
+- Fix: a wide, short cylinder (radius comparable to or larger than the ring
+  spacing) was mis-read and destroyed on resize — a clearly fat tube collapsed
+  to a flat sliver (read as one circle), and a near-cubic multi-ring tube
+  exploded into wedge fragments. Both come from the same ambiguity: a tube can be
+  read as a few big rings stacked along its axis or as many small rings stacked
+  sideways. The plane bisector now requires each cluster to wrap most of the way
+  round (new `_arc_span` helper) and, among readings where every cluster is a
+  ring, prefers the one with the FEWEST, biggest rings — the true cross-section.
+  Tubes now split into their real rings at every radius and aspect ratio.
+- Tests: fat / short stacks (radius 4–60) plus a round-trip integrity suite that
+  resizes 2- to 7-ring tubes big → small → tiny → back and checks the tube stays
+  whole every step. 58 checks, green on 4.5 / 5.0 / 5.3.
+- Docs: correct the LoopTools comparison in the README — it does set a custom
+  radius and is equivalent for a single loop; the real differences are arc
+  *preservation* (it closes open arcs), several rings of one connected mesh in
+  one call, multi-object edit, and inline `E`/`S`/`G`-style numeric entry.
+
 ## 1.9.2 — 2026-06-24
 - Add project `website` (public GitHub mirror) to the manifest, for source +
-  issue reporting.
+  issue reporting. (Folded into 1.9.3; never uploaded on its own.)
 
 ## 1.9.1 — 2026-06-23
 - Fix: multi-object `invoke`/`execute` kept the edit-mode bmesh inline without a

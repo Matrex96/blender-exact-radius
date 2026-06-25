@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 9, 2),
+    "version": (1, 9, 3),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -158,6 +158,28 @@ def _is_circle(verts):
     return fit is not None and _circle_error(verts, fit) is None
 
 
+def _arc_span(verts, fit):
+    """Fraction of a full turn the verts cover around the fitted center.
+
+    ~1.0 for a closed ring, ~0.0 for a short wedge. Used by the plane-bisector to
+    tell a genuine stacked ring (cuts across a tube into whole cross-sections)
+    from the narrow angular wedges an in-plane cut carves out of a wide tube —
+    both fit a circle, but only the real ring wraps most of the way round.
+    """
+    c = np.array(fit[0][:], dtype=float)
+    nrm = np.array(fit[1][:], dtype=float)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(nrm[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(nrm, ref)
+    e1 /= (np.linalg.norm(e1) + 1e-12)
+    e2 = np.cross(nrm, e1)
+    p = np.array([v.co[:] for v in verts], dtype=float) - c
+    ang = np.sort(np.arctan2(p @ e2, p @ e1))
+    if ang.size < 2:
+        return 0.0
+    biggest = max(float(np.max(np.diff(ang))), float(ang[0] + 2.0 * np.pi - ang[-1]))
+    return 1.0 - biggest / (2.0 * np.pi)
+
+
 def _bisect_by_plane(verts):
     """Split a component into parallel clusters along its stacking axis.
 
@@ -179,7 +201,6 @@ def _bisect_by_plane(verts):
         _, _s, vt = np.linalg.svd(Q, full_matrices=False)
     except np.linalg.LinAlgError:
         return None
-
     def axis_split(axis):
         proj = Q @ axis
         order = np.argsort(proj)
@@ -213,8 +234,26 @@ def _bisect_by_plane(verts):
             groups.append([vlist[k] for k in idx])
         if len(groups) < 2:
             return None
-        clean = sum(1 for g in groups if _is_circle(g))
-        return (clean, sep), groups
+        # Count the clusters that are real cross-section rings: a circle that
+        # wraps most of the way round (not a short arc). A wide tube is genuinely
+        # ambiguous — it can be read as a few big rings stacked along its axis OR
+        # as many small rings stacked sideways — so both readings can come out
+        # "all rings". The tie-breaker (below) prefers the reading with the
+        # FEWEST, biggest rings, which is the real cross-section; sideways wedge
+        # readings always produce more rings, so they lose.
+        clean = 0
+        for g in groups:
+            f = _fit_circle(g)
+            if (f is not None and _circle_error(g, f) is None
+                    and _arc_span(g, f) > 0.6):
+                clean += 1
+        if clean == 0:
+            return None
+        if clean == len(groups):
+            key = (2, -len(groups), sep)     # every cluster a ring -> fewest wins
+        else:
+            key = (1, clean, sep)            # only some clusters are rings
+        return key, groups
 
     best = None
     for axis in vt:
@@ -232,14 +271,31 @@ def _bisect_by_plane(verts):
     return best[1]
 
 
+def _is_single_ring(verts, fit):
+    """True if `verts` is one usable circle, not several rings stacked on it.
+
+    A wide, short tube (radius >> ring spacing) fits a plane well enough to pass
+    the flatness test — its out-of-plane spread is tiny next to the big radius —
+    so it would be taken for a single circle and then collapse to a flat sliver
+    when every vertex is forced onto that one plane. The plane-bisector is the
+    honest arbiter: it returns None for a lone ring or arc (it never chops one
+    into pieces), and returns >= 2 groups precisely when the selection is really
+    several rings stacked along the fit normal — at any radius. So a clean circle
+    that the bisector still wants to split is not a single ring.
+    """
+    return (fit is not None and _circle_error(verts, fit) is None
+            and _bisect_by_plane(verts) is None)
+
+
 def _split_leaves(verts, depth=0):
     """Recursively bisect a component into leaf groups (for stacked rings).
 
-    Stops descending as soon as a group is itself a clean circle, so a single
-    ring is never chopped into arcs.
+    Stops descending as soon as a group is a single clean ring, so a lone ring
+    (or arc) is never chopped into arcs — but a wide, short tube that merely
+    *looks* flat is still split, via _is_single_ring.
     """
     fit = _fit_circle(verts)
-    if (fit is not None and _circle_error(verts, fit) is None) or depth >= 8:
+    if _is_single_ring(verts, fit) or depth >= 8:
         return [verts]
     parts = _bisect_by_plane(verts)
     if not parts:
@@ -260,7 +316,7 @@ def _find_circles(sel):
     circles = []
     for comp in _connected_groups(sel):
         fit = _fit_circle(comp)
-        if fit is not None and _circle_error(comp, fit) is None:
+        if _is_single_ring(comp, fit):
             circles.append((comp, fit))           # one clean circle
             continue
         found = []                                # peel apart stacked rings

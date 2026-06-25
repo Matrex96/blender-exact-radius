@@ -142,6 +142,16 @@ for zs in ([0.0, 1.3, 5.0], [0.0, 2.0, 2.7, 7.0, 11.5, 12.1]):
     check("stacked uneven (%d) -> %d" % (len(zs), len(zs)), n_valid(bm) == len(zs),
           "got %d" % n_valid(bm)); bm.free()
 
+# fat / short tubes (radius >= ring spacing): a wide, short cylinder used to be
+# mis-read as ONE circle — its points look nearly co-planar (out-of-plane / big
+# radius is tiny) — and then collapse to a flat sliver on resize. Each ring must
+# still be found independently, at any radius.
+for r in (4.0, 8.0, 20.0, 60.0):
+    bm = stacked([0.0, 2.0], n=32, r=r)
+    check("fat stack r=%g spacing 2 -> 2" % r, n_valid(bm) == 2, "got %d" % n_valid(bm)); bm.free()
+bm = stacked([0.0, 1.0, 2.0], n=32, r=20.0)
+check("fat 3-stack r=20 spacing 1 -> 3", n_valid(bm) == 3, "got %d" % n_valid(bm)); bm.free()
+
 bm = stacked([i * 2.0 for i in range(10)], n=64)
 t0 = time.perf_counter(); got = n_valid(bm); dt = time.perf_counter() - t0
 check("perf 10x64 stack -> 10 fast", got == 10 and dt < 0.5, "%d in %.3fs" % (got, dt)); bm.free()
@@ -310,6 +320,55 @@ check("op multi: OTHER ring set to 0.3", abs(_ring_radius(ob) - 0.3) < 1e-3, "r=
 
 for _o in (o1, oa, ob):
     bpy.data.objects.remove(_o, do_unlink=True)
+
+# --- 9. round-trip integrity --------------------------------------------------
+# Resize a real 2-ring cylinder through big -> back -> small -> tiny -> original
+# and check it stays a WHOLE cylinder every step (both rings at the new radius,
+# the two rings still apart). A wide, short cylinder used to be read as one
+# circle and collapse to a flat sliver; this stresses every aspect ratio the
+# round-trip passes through, at the operator level.
+section("round-trip cylinder integrity (operator)")
+
+
+def _cyl_object(name, n, r, h, nr=2):
+    """A connected tube of `nr` rings (radius r) evenly spaced over height h."""
+    me = bpy.data.meshes.new(name); o = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(o)
+    b = bmesh.new()
+    rings = [ring_verts(b, n, r, center=(0, 0, -h / 2 + h * j / (nr - 1)))
+             for j in range(nr)]
+    for j in range(nr - 1):
+        for a, c in zip(rings[j], rings[j + 1]): b.edges.new((a, c))
+    b.to_mesh(me); b.free()
+    return o
+
+
+def _cyl_ok(o, r, h, nr):
+    """Still a whole tube: every vert at xy-radius r, all nr ring planes still
+    present along z (not collapsed / not exploded)."""
+    rad = [math.hypot(v.co.x, v.co.y) for v in o.data.vertices]
+    zs = sorted(round(v.co.z, 4) for v in o.data.vertices)
+    radius_ok = all(abs(rr - r) < 1e-2 * max(r, 1.0) for rr in rad)
+    planes = len(set(zs))
+    height_ok = (max(zs) - min(zs)) > 0.5 * h and planes == nr
+    return radius_ok and height_ok
+
+
+for (n, r0, h, nr) in [(32, 8.0, 2.0, 2), (16, 8.0, 2.0, 2), (48, 20.0, 2.0, 2),
+                       (32, 5.0, 10.0, 2), (24, 3.0, 1.0, 2), (32, 10.0, 3.0, 2),
+                       (32, 3.0, 2.0, 3), (32, 8.0, 2.0, 3),   # near-cubic multi-ring
+                       (32, 8.0, 2.0, 5), (24, 5.0, 4.0, 7),   # loop-cut tubes
+                       (32, 1.0, 2.0, 3)]:                     # tiny multi-ring
+    cyl = _cyl_object("ER_cyl", n, r0, h, nr)
+    ok, detail = True, ""
+    for tgt in (r0 * 2.0, r0, r0 * 0.5, 0.05, r0):     # big, back, small, tiny, original
+        res, err = _run_operator_on([cyl], cyl, tgt)
+        if err or res != {'FINISHED'} or not _cyl_ok(cyl, tgt, h, nr):
+            ok = False
+            detail = "broke at ->%g (err=%s, whole=%s)" % (tgt, err, _cyl_ok(cyl, tgt, h, nr))
+            break
+    check("roundtrip n=%d r0=%g h=%g rings=%d stays whole" % (n, r0, h, nr), ok, detail)
+    bpy.data.objects.remove(cyl, do_unlink=True)
 
 # --- summary ------------------------------------------------------------------
 nf = _results.count(False)

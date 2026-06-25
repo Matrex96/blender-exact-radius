@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "exact_radius"
-version = "1.9.2"
+version = "1.9.3"
 name = "Exact Radius"
 tagline = "Make selected vertex rings exact-radius circles, many at once"
 maintainer = "Patrick Tiefenbacher"

@@ -14,7 +14,7 @@ Non-destructive, undo-able, no scaling or applying.
 | Tool | What it does | What's missing |
 |------|--------------|----------------|
 | **Scale (S + number)** | the usual way to resize a ring | scales by a *factor*, not to an absolute radius — you'd need to know the current size and compute the ratio |
-| **LoopTools → Circle** | makes a vertex/edge loop circular | needs a clean ordered loop, "Custom Radius" is fiddly, no proper arc / partial-circle support |
+| **LoopTools → Circle** | makes a vertex/edge loop circular, incl. a Custom Radius | equivalent for a single loop, but **closes open arcs into full circles**, can't resize **several rings of one connected mesh** in one call (degenerate result), is **active-object only**, and its radius lives in an operator panel rather than an inline `E`/`S`/`G`-style entry |
 | **Cast modifier** | pushes a mesh toward a circle/sphere shape | object-level and factor-based; not an Edit-Mode selection with a fitted center and an exact radius |
 | **To Sphere (Shift+Alt+S)** | morphs selection toward a sphere | spherical and factor-based, not an exact circle radius |
 
