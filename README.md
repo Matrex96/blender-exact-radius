@@ -1,26 +1,37 @@
 # Exact Radius
 
-A tiny Blender Edit-Mode tool that turns selected rings of vertices into
-**perfect circles of an exact numeric radius** — one or many at once, at any
-orientation, for full circles, holes and partial arcs. It fits each selection's
-own plane and circle center, then sets every vertex to the radius you type.
+Type an exact numeric radius and turn any selected ring of vertices into a
+**perfect circle of that size** — one ring or many at once, at any orientation,
+open arcs included. It fits each selection's own plane and center, then sets
+every vertex to the radius you type.
 
 Non-destructive, undo-able, no scaling or applying.
 
 <p align="center"><img src="docs/demo-editmode.gif" width="300" alt="Exact Radius demo"></p>
 
-## Why not just use…?
+## What you get over Scale
 
-| Tool | What it does | What's missing |
-|------|--------------|----------------|
-| **Scale (S + number)** | the usual way to resize a ring | scales by a *factor*, not to an absolute radius — you'd need to know the current size and compute the ratio |
-| **LoopTools → Circle** | makes a vertex/edge loop circular, incl. a Custom Radius | equivalent for a single loop, but **closes open arcs into full circles**, can't resize **several rings of one connected mesh** in one call (degenerate result), is **active-object only**, and its radius lives in an operator panel rather than an inline `E`/`S`/`G`-style entry |
-| **Cast modifier** | pushes a mesh toward a circle/sphere shape | object-level and factor-based; not an Edit-Mode selection with a fitted center and an exact radius |
-| **To Sphere (Shift+Alt+S)** | morphs selection toward a sphere | spherical and factor-based, not an exact circle radius |
+`S` scales by a *factor* — to land on a real radius you'd have to measure the
+ring and do the math. Exact Radius takes the number directly: **Alt+R → type the
+radius → Enter**, the same flow as Move/Scale/Extrude, with math expressions
+built in (type `24/2` to go from a diameter to its radius).
 
-**Exact Radius** is the thing you actually want when you reach for Scale: type a
-real radius (in your scene units), and the selection becomes an exact circle —
-tilted, rotated or a partial arc, it just works.
+## What you get over LoopTools → Circle
+
+LoopTools' *Circle* also makes a single loop round at a custom radius — for one
+clean loop, the two are equivalent. Exact Radius pulls ahead the moment you want
+more than that:
+
+- **Arcs stay arcs.** Select part of a ring and it's set to the radius *as an
+  arc*. LoopTools closes an open arc into a full circle.
+- **Many rings in one press.** Several separate holes, or every cross-section of
+  one connected tube — each is fitted and resized independently in a single
+  call. LoopTools does one loop, and returns a degenerate result on a connected
+  multi-ring selection.
+- **Across objects at once.** It resizes rings on every mesh that's in Edit Mode
+  together; LoopTools acts on the active object only.
+- **No menu, no panel.** The radius is an inline modal entry (with live math),
+  not a value you go hunting for in an operator panel.
 
 ## Usage
 
@@ -29,22 +40,19 @@ tilted, rotated or a partial arc, it just works.
    in one mesh.
 2. Press the shortcut (default **Alt+R**), or **Vertex menu → Exact Radius**.
 3. **Type the radius and press Enter** — like Move/Scale. You can type a **math
-   expression**, e.g. `20/2` to go from a diameter of 20 to its radius. `Esc`
-   cancels. Pressing Enter with nothing typed uses the fitted radius.
+   expression**, e.g. `20/2`. `Esc` cancels. Pressing Enter with nothing typed
+   uses the fitted radius.
 4. Afterwards, the **F9** redo panel lets you set the center (Auto / 3D Cursor).
    With several rings selected, each keeps its own fitted center.
 
-### Good to know
+### Also handy
 
-- **One or many at once** — select several rings in a single go (separate holes,
-  or rings stacked in one mesh like the cross-sections of a tube) and each is
-  fitted and resized independently; you get a count, e.g. *12 circles set*.
-- **Any orientation just works** — the tool fits the selection's own plane, so a
-  circle tilted or rotated anywhere in space becomes perfectly round.
-- **Partial arcs work** — the center is a least-squares circle fit, so even a
+- **Any orientation just works** — a ring tilted or rotated anywhere in space
+  becomes perfectly round, because it fits the selection's own plane.
+- **Exact center on partial arcs** — a least-squares circle fit, so even a
   quarter circle gets the correct center and radius.
-- **It checks the selection** — if you select something that isn't a circle (a
-  whole face, the whole mesh, a blob), you get a clear error instead of a mess.
+- **It checks the selection** — a whole face, the whole mesh or a blob gives a
+  clear error instead of a mess.
 
 ## Preferences
 
