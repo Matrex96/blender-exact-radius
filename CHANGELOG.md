@@ -8,13 +8,22 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.9.3   | 2026-06-25 | — | built; upload as an update once 1.9.1 is approved (supersedes 1.9.2) |
+| 1.9.4   | 2026-06-28 | — | built; addresses reviewer feedback (`__package__`) — upload as the review update |
+| 1.9.3   | 2026-06-25 | — | built; superseded by 1.9.4 (not uploaded) |
 | 1.9.2   | 2026-06-24 | — | superseded by 1.9.3 (not uploaded) |
 | 1.9.1   | 2026-06-23 | 2026-06-23 | submitted — awaiting moderation |
 
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
 ---
+
+## 1.9.4 — 2026-06-28
+- Fix: address extensions.blender.org review feedback — access the add-on
+  preferences via `__package__` instead of `__name__` (both the
+  `AddonPreferences.bl_idname` and the `preferences.addons[...]` lookup). Under
+  the extensions namespace the module is `bl_ext.<repo>.exact_radius`, and
+  `__package__` is the documented, future-proof identifier for preferences.
+  No behaviour change. (Thanks to the reviewer, @nickberckley.)
 
 ## 1.9.3 — 2026-06-25
 - Fix: a wide, short cylinder (radius comparable to or larger than the ring

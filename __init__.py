@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 9, 3),
+    "version": (1, 9, 4),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -570,7 +570,7 @@ def _apply_shortcut(key_id):
 
 def _current_shortcut():
     try:
-        return bpy.context.preferences.addons[__name__].preferences.shortcut
+        return bpy.context.preferences.addons[__package__].preferences.shortcut
     except Exception:
         return 'ALT_R'
 
@@ -593,7 +593,7 @@ def _update_shortcut(self, context):
 
 
 class EXACTRADIUS_AP_prefs(bpy.types.AddonPreferences):
-    bl_idname = __name__
+    bl_idname = __package__
 
     shortcut: EnumProperty(
         name="Shortcut",
