@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 10, 1),
+    "version": (1, 10, 0),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
