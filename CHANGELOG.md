@@ -8,7 +8,8 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.10.0  | 2026-07-02 | — | built; new: coplanar bridged circles are found and set (ring-tracing fallback) |
+| 1.10.1  | 2026-07-02 | — | built; fix: shrunken bridged pairs / spoked wheels no longer collapse (tracer veto in the single-ring test) — upload THIS one, supersedes 1.10.0 |
+| 1.10.0  | 2026-07-02 | — | built; new: coplanar bridged circles are found and set (ring-tracing fallback) — superseded by 1.10.1 (not uploaded) |
 | 1.9.4   | 2026-06-28 | — | built; addresses reviewer feedback (`__package__`) — upload as the review update |
 | 1.9.3   | 2026-06-25 | — | built; superseded by 1.9.4 (not uploaded) |
 | 1.9.2   | 2026-06-24 | — | superseded by 1.9.3 (not uploaded) |
@@ -17,6 +18,19 @@ released and what was uploaded to extensions.blender.org.
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
 ---
+
+## 1.10.1 — 2026-07-02
+- Fix: resizing a bridged coplanar pair SMALL and then big again collapsed both
+  rings. Two small circles far apart plus their bridges happen to fit ONE big
+  circle through both within tolerance (a phantom ~r 5.76 for the field case),
+  so the whole piece passed as a single ring and was flattened onto that
+  phantom on the way back up. `_is_single_ring` now gives the ring tracer the
+  same veto as the plane bisector — a clean-looking combined fit is only a
+  single ring if the tracer cannot find two real cycles in it. Bonus: spoked
+  wheels (two concentric bridged rings) now split correctly even when their
+  radii are close enough for a clean combined fit.
+- Tests: 99 → 103 — phantom-fit twins, spoked wheel (far and close radii), and
+  an operator round-trip big → small → big on the bridged pair.
 
 ## 1.10.0 — 2026-07-02
 - New: circles lying in the SAME plane and bridged into one connected piece

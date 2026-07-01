@@ -276,6 +276,24 @@ bm = bmesh.new(); bridged_coplanar(bm, [(3.0, (0, 0, 0)), (3.0, (0, -10.0, 0))])
 check("bridged coplanar separated -> [3, 3]", radii(bm) == [3.0, 3.0],
       "%s" % radii(bm)); bm.free()
 
+# the small-then-big killer (field find #2, 2026-07-02): two SMALL circles far
+# apart + their bridges happen to fit ONE big circle through both within
+# tolerance (r~5.76 for this pair) — the whole piece was read as a single ring
+# and collapsed onto that phantom circle when sized back up
+bm = bmesh.new(); bridged_coplanar(bm, [(1.0, (0, 0, 0)), (1.0, (0, -11.35, 0))])
+check("bridged coplanar SMALL twins (phantom combined fit) -> [1, 1]",
+      radii(bm) == [1.0, 1.0], "%s" % radii(bm)); bm.free()
+
+# spoked wheel: two CONCENTRIC coplanar rings, bridged by spokes — no axis gap
+# ever; with close radii the combined fit is also "clean", so both guards
+# (bisector veto + tracer veto) are needed
+bm = bmesh.new(); bridged_coplanar(bm, [(3.0, (0, 0, 0)), (8.0, (0, 0, 0))])
+check("spoked wheel r3/r8 -> [3, 8]", radii(bm) == [3.0, 8.0], "%s" % radii(bm)); bm.free()
+
+bm = bmesh.new(); bridged_coplanar(bm, [(3.0, (0, 0, 0)), (3.5, (0, 0, 0))])
+check("spoked wheel CLOSE radii r3/r3.5 -> [3, 3.5]", radii(bm) == [3.0, 3.5],
+      "%s" % radii(bm)); bm.free()
+
 # and resized through the core: both rings land on the target radius
 bm = bmesh.new(); bridged_coplanar(bm, [(10.0, (0, 0, 0)), (10.0, (0, -11.35, 0))])
 for vv in bm.verts: vv.select = True
@@ -685,6 +703,24 @@ check("op bridged coplanar: both rings -> 4, centers kept",
       and max(abs(x - 4.0) for x in _dA) < 1e-2 and max(abs(x - 4.0) for x in _dB) < 1e-2,
       "err=%s res=%s A=%.3f..%.3f B=%.3f..%.3f" % (err, res, min(_dA), max(_dA), min(_dB), max(_dB)))
 bpy.data.objects.remove(obr, do_unlink=True)
+
+# ... and the ROUND-TRIP: big -> small -> big again. Shrunken far-apart twins
+# masquerade as one big circle (see the phantom-fit test above); sizing back up
+# used to collapse both rings onto that phantom.
+_deselect_all()
+orb = _mesh_object("ER_bridged_rt", _build_bridged)
+_ok, _detail = True, ""
+for _tgt in (1.0, 10.0, 0.5, 10.0):
+    res, err = _run_operator_on([orb], orb, _tgt)
+    _dA = [(v.co - Vector((0, 0, 0))).length for v in orb.data.vertices[:32]]
+    _dB = [(v.co - Vector((0, -11.35, 0))).length for v in orb.data.vertices[32:]]
+    if not (err is None and res == {'FINISHED'}
+            and max(abs(x - _tgt) for x in _dA) < 1e-2
+            and max(abs(x - _tgt) for x in _dB) < 1e-2):
+        _ok, _detail = False, "broke at ->%g (err=%s res=%s)" % (_tgt, err, res)
+        break
+check("op bridged coplanar round-trip small->big stays two rings", _ok, _detail)
+bpy.data.objects.remove(orb, do_unlink=True)
 
 # CURSOR center mode, single ring: the circle is rebuilt around the 3D cursor.
 # (The cursor must not sit exactly ON a vertex — such a vertex has no radial

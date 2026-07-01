@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 10, 0),
+    "version": (1, 10, 1),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -389,9 +389,18 @@ def _is_single_ring(verts, fit):
     into pieces), and returns >= 2 groups precisely when the selection is really
     several rings stacked along the fit normal — at any radius. So a clean circle
     that the bisector still wants to split is not a single ring.
+
+    The ring-tracer gets the same veto: two coplanar bridged rings can sneak a
+    CLEAN combined fit past the residual test — two small circles far apart plus
+    their bridges lie close to one big circle through both (a shrunken bridged
+    pair), and a spoked wheel's concentric rings average to a clean mid-radius
+    circle. The bisector cannot split either (no axis gap), but the tracer finds
+    their two real cycles — and like the bisector it never chops a lone ring or
+    arc (a single closed walk is not accepted as a split).
     """
     return (fit is not None and _circle_error(verts, fit) is None
-            and _bisect_by_plane(verts) is None)
+            and _bisect_by_plane(verts) is None
+            and _trace_rings(verts) is None)
 
 
 def _split_leaves(verts, depth=0):
