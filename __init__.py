@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 9, 4),
+    "version": (1, 10, 0),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -17,6 +17,7 @@ bl_info = {
 import bpy
 import bmesh
 import ast
+import math
 import operator as _operator
 import numpy as np
 from mathutils import Vector
@@ -271,6 +272,112 @@ def _bisect_by_plane(verts):
     return best[1]
 
 
+def _walk_cycle(start, sel, used):
+    """One closed walk from `start` over unused selected verts, or None.
+
+    At every step take the neighbour that best continues the ring traced so
+    far: once a running circle fit exists, the candidate closest to that
+    circle wins; before that (the first, nearly straight steps) the
+    straightest continuation wins. A bridge edge points far off the running
+    circle, so the walk stays on its own ring and closes there.
+    """
+    for first in start.link_edges:
+        second = first.other_vert(start)
+        if second not in sel or second in used:
+            continue
+        path = [start, second]
+        in_path = {start, second}
+        while len(path) <= len(sel):
+            v, prev = path[-1], path[-2]
+            fit = _fit_circle(path[-8:]) if len(path) >= 4 else None
+            best = best_score = None
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if w not in sel or w in used or w is prev:
+                    continue
+                if w in in_path and (w is not start or len(path) < 3):
+                    continue
+                if fit is not None:
+                    c, nrm, radius = fit[0], fit[1], fit[2]
+                    d = w.co - c
+                    radial = d - d.dot(nrm) * nrm
+                    score = abs(radial.length - radius) / max(radius, 1e-9)
+                else:
+                    d1, d2 = v.co - prev.co, w.co - v.co
+                    if d1.length < 1e-12 or d2.length < 1e-12:
+                        score = 2.0
+                    else:                       # 0 = straight on, 2 = U-turn
+                        score = 1.0 - d1.normalized().dot(d2.normalized())
+                if best_score is None or score < best_score:
+                    best, best_score = w, score
+            if best is None:
+                break                           # dead end — try the other way
+            if best is start:
+                return path                     # closed
+            path.append(best)
+            in_path.add(best)
+    return None
+
+
+def _evenly_turning(cycle):
+    """True if the cycle turns like a circle: at EVERY vertex, evenly.
+
+    A polygonal ring spreads its 360° of curvature over every vertex; the
+    block outlines a best-continuation walk traces out of a filled face patch
+    concentrate it in a few 90° corners with straight runs between (and those
+    outlines, annoyingly, fit a circle within tolerance). So: no vertex may
+    turn much more than the mean, and none may run straight through.
+    """
+    n = len(cycle)
+    turns = []
+    for i in range(n):
+        a = cycle[i].co - cycle[i - 1].co
+        b = cycle[(i + 1) % n].co - cycle[i].co
+        if a.length < 1e-12 or b.length < 1e-12:
+            return False
+        dot = max(-1.0, min(1.0, a.normalized().dot(b.normalized())))
+        turns.append(math.acos(dot))
+    mean = sum(turns) / n
+    return (mean > 1e-9
+            and max(turns) <= 2.5 * mean
+            and min(turns) >= 0.3 * mean)
+
+
+def _trace_rings(verts):
+    """Fallback splitter for rings the plane-bisector cannot separate.
+
+    Rings lying in the SAME plane and bridged into one connected piece (two
+    overlapping circles joined by bridge edges) have no separating gap on any
+    axis, so _bisect_by_plane returns None for them. Here the edge graph
+    itself is followed instead: every closed best-continuation walk that is a
+    clean, nearly full, evenly-turning circle of >= 6 verts claims its verts
+    as one ring. Only accepted when at least TWO such cycles exist — a lone
+    cycle (e.g. the perimeter of a face patch) must never split anything.
+    Returns >= 2 groups or None.
+    """
+    used = set()
+    cycles = []
+    sel = set(verts)
+    failed = 0
+    for start in verts:
+        if start in used or failed > 32:
+            continue
+        cyc = _walk_cycle(start, sel, used)
+        f = _fit_circle(cyc) if cyc else None
+        if (cyc is not None and len(cyc) >= 6
+                and f is not None and _circle_error(cyc, f) is None
+                and _arc_span(cyc, f) > 0.6
+                and _evenly_turning(cyc)):
+            cycles.append(cyc)
+            used.update(cyc)
+        else:
+            failed += 1
+    if len(cycles) < 2:
+        return None
+    left = [v for v in verts if v not in used]
+    return cycles + (_connected_groups(left) if left else [])
+
+
 def _is_single_ring(verts, fit):
     """True if `verts` is one usable circle, not several rings stacked on it.
 
@@ -298,6 +405,8 @@ def _split_leaves(verts, depth=0):
     if _is_single_ring(verts, fit) or depth >= 8:
         return [verts]
     parts = _bisect_by_plane(verts)
+    if not parts:
+        parts = _trace_rings(verts)     # coplanar bridged rings — no axis gap
     if not parts:
         return [verts]
     out = []

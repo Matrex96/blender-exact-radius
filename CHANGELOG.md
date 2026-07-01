@@ -8,6 +8,7 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
+| 1.10.0  | 2026-07-02 | — | built; new: coplanar bridged circles are found and set (ring-tracing fallback) |
 | 1.9.4   | 2026-06-28 | — | built; addresses reviewer feedback (`__package__`) — upload as the review update |
 | 1.9.3   | 2026-06-25 | — | built; superseded by 1.9.4 (not uploaded) |
 | 1.9.2   | 2026-06-24 | — | superseded by 1.9.3 (not uploaded) |
@@ -16,6 +17,27 @@ released and what was uploaded to extensions.blender.org.
 _(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
 
 ---
+
+## 1.10.0 — 2026-07-02
+- New: circles lying in the SAME plane and bridged into one connected piece
+  (e.g. two overlapping circles joined with Bridge Edge Loops) are now found
+  and set individually. The plane bisector cannot separate them — their
+  projections overlap on every axis, so there is no gap to cut at. A new
+  ring-tracing fallback (`_trace_rings`/`_walk_cycle`) follows the edge graph
+  instead: each walk takes the neighbour that best continues the circle traced
+  so far (deviation from a running circle fit; straightness before a fit
+  exists), so bridge edges — which point far off the running circle — are
+  never taken. A traced ring is only accepted if it is a clean, nearly full,
+  evenly-turning circle of >= 6 verts (`_evenly_turning`: a real ring spreads
+  its curvature over every vertex, while the block outlines such a walk can
+  trace out of a filled face patch concentrate it in a few 90° corners — and
+  those outlines fit a circle within tolerance, so shape alone cannot reject
+  them), and only when at least two such rings exist — a lone cycle never
+  splits anything, keeping face patches / grids rejected as before.
+- Tests: 92 → 99 checks — bridged coplanar pairs (overlapping / separated /
+  different radii / jittered / through the real operator), plus a 10×10 face
+  patch guarding the fallback against carving block outlines. Green on
+  4.5 / 5.0 / 5.3.
 
 ## 1.9.4 — 2026-06-28
 - Fix: address extensions.blender.org review feedback — access the add-on

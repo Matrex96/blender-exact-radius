@@ -250,6 +250,68 @@ _ax = Vector((1, 1, 1)).normalized()
 bm = connected_rings([(1.0, tuple(_ax * d), tuple(_ax)) for d in (0.0, 2.0, 4.0)], n=16)
 check("stack along diagonal -> 3", n_valid(bm) == 3, "got %d" % n_valid(bm)); bm.free()
 
+
+# --- bridged COPLANAR circles (Patrick's field find, 2026-07-02) ---------------
+# Two circles in the SAME plane, bridged into one connected piece. The plane
+# bisector cannot separate them when their axis projections overlap (no gap on
+# any axis), so this needs the ring-tracing fallback. Field case: two r=10
+# circles, centers 11.35 apart (heavily overlapping), bridged vert i <-> vert i.
+def bridged_coplanar(bm, specs, n=32):
+    """Coplanar rings from (radius, center) specs, bridged pairwise i<->i."""
+    rings = [ring_verts(bm, n, r, center=c) for r, c in specs]
+    for k in range(len(rings) - 1):
+        for a, b in zip(rings[k], rings[k + 1]): bm.edges.new((a, b))
+    return rings
+
+
+bm = bmesh.new(); bridged_coplanar(bm, [(10.0, (0, 0, 0)), (10.0, (0, -11.35, 0))])
+check("bridged coplanar twins (overlapping) -> [10, 10]", radii(bm) == [10.0, 10.0],
+      "%s" % radii(bm)); bm.free()
+
+bm = bmesh.new(); bridged_coplanar(bm, [(4.0, (0, 0, 0)), (9.0, (0, -6.0, 0))])
+check("bridged coplanar different radii -> [4, 9]", radii(bm) == [4.0, 9.0],
+      "%s" % radii(bm)); bm.free()
+
+bm = bmesh.new(); bridged_coplanar(bm, [(3.0, (0, 0, 0)), (3.0, (0, -10.0, 0))])
+check("bridged coplanar separated -> [3, 3]", radii(bm) == [3.0, 3.0],
+      "%s" % radii(bm)); bm.free()
+
+# and resized through the core: both rings land on the target radius
+bm = bmesh.new(); bridged_coplanar(bm, [(10.0, (0, 0, 0)), (10.0, (0, -11.35, 0))])
+for vv in bm.verts: vv.select = True
+s, sk = ER._resize_selection(bm, 5.0)
+check("bridged coplanar resize -> 2 set, both r~5", (s, sk) == (2, 0) and radii(bm) == [5.0, 5.0],
+      "set=%s %s" % ((s, sk), radii(bm))); bm.free()
+
+# jittered bridged pair: the tracing walk must survive real-world noise
+bm = bmesh.new()
+jr = []
+for cy in (0.0, -11.35):
+    vs = []
+    for i in range(32):
+        a = 2 * math.pi * i / 32
+        r = 10.0 + 0.08 * math.sin(i * 12.9898 + cy)
+        vs.append(bm.verts.new((r * math.cos(a), cy + r * math.sin(a), 0)))
+    bm.verts.ensure_lookup_table()
+    for i in range(32): bm.edges.new((vs[i], vs[(i + 1) % 32]))
+    jr.append(vs)
+for a, b in zip(*jr): bm.edges.new((a, b))
+check("bridged coplanar jittered -> 2 circles r~10",
+      n_valid(bm) == 2 and all(abs(r - 10.0) < 0.05 for r in radii(bm)),
+      "n=%d %s" % (n_valid(bm), radii(bm))); bm.free()
+
+# a BIG face patch must still be one rejected blob — the tracing fallback may
+# not carve block outlines out of it (disjoint 2x2-block cycles etc.)
+bm = bmesh.new()
+gg = {(i, j): bm.verts.new((i, j, 0)) for i in range(10) for j in range(10)}
+bm.verts.ensure_lookup_table()
+for i in range(10):
+    for j in range(10):
+        if i + 1 < 10: bm.edges.new((gg[(i, j)], gg[(i + 1, j)]))
+        if j + 1 < 10: bm.edges.new((gg[(i, j)], gg[(i, j + 1)]))
+check("10x10 grid -> 0 circles (trace must not carve blocks)", n_valid(bm) == 0,
+      "got %d" % n_valid(bm)); bm.free()
+
 # --- 4. register / unregister -------------------------------------------------
 section("register / keymap")
 def km_count():
@@ -604,6 +666,25 @@ check("op cone: both rings -> 0.7, two planes kept",
       and max(abs(rr - 0.7) for rr in _rad) < 1e-2 and len(_zs) == 2,
       "err=%s rad=%.3f..%.3f planes=%d" % (err, min(_rad), max(_rad), len(_zs)))
 bpy.data.objects.remove(oc, do_unlink=True)
+
+# bridged coplanar circles through the real operator (the 2026-07-02 field
+# case): both rings get the radius, the two centers stay put
+def _build_bridged(b):
+    r1 = ring_verts(b, 32, 10.0, center=(0, 0, 0))
+    r2 = ring_verts(b, 32, 10.0, center=(0, -11.35, 0))
+    for a, c in zip(r1, r2): b.edges.new((a, c))
+
+
+_deselect_all()
+obr = _mesh_object("ER_bridged", _build_bridged)
+res, err = _run_operator_on([obr], obr, 4.0)
+_dA = [(v.co - Vector((0, 0, 0))).length for v in obr.data.vertices[:32]]
+_dB = [(v.co - Vector((0, -11.35, 0))).length for v in obr.data.vertices[32:]]
+check("op bridged coplanar: both rings -> 4, centers kept",
+      err is None and res == {'FINISHED'}
+      and max(abs(x - 4.0) for x in _dA) < 1e-2 and max(abs(x - 4.0) for x in _dB) < 1e-2,
+      "err=%s res=%s A=%.3f..%.3f B=%.3f..%.3f" % (err, res, min(_dA), max(_dA), min(_dB), max(_dB)))
+bpy.data.objects.remove(obr, do_unlink=True)
 
 # CURSOR center mode, single ring: the circle is rebuilt around the 3D cursor.
 # (The cursor must not sit exactly ON a vertex — such a vertex has no radial
