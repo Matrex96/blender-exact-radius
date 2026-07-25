@@ -132,6 +132,11 @@ def _circle_error(verts, fit):
     return None
 
 
+def _is_usable_circle(verts, fit):
+    """True if this group is a circle the add-on will act on at all."""
+    return fit is not None and _circle_error(verts, fit) is None
+
+
 def _connected_groups(verts):
     """Split a vertex selection into edge-connected components.
 
@@ -159,11 +164,6 @@ def _connected_groups(verts):
     return groups
 
 
-def _is_circle(verts):
-    fit = _fit_circle(verts)
-    return fit is not None and _circle_error(verts, fit) is None
-
-
 def _arc_span(verts, fit):
     """Fraction of a full turn the verts cover around the fitted center.
 
@@ -184,6 +184,13 @@ def _arc_span(verts, fit):
         return 0.0
     biggest = max(float(np.max(np.diff(ang))), float(ang[0] + 2.0 * np.pi - ang[-1]))
     return 1.0 - biggest / (2.0 * np.pi)
+
+
+def _is_full_ring(verts, fit):
+    """True if the group is a usable circle that also wraps most of the way
+    round — a whole ring, not a short arc or a wedge sliced out of a tube.
+    """
+    return _is_usable_circle(verts, fit) and _arc_span(verts, fit) > 0.6
 
 
 def _shell_of(verts, fit):
@@ -224,15 +231,12 @@ def _is_ring_cluster(verts):
     the piece falls to the ring tracer, which carves it into nonsense.
     """
     fit = _fit_circle(verts)
-    if (fit is not None and _circle_error(verts, fit) is None
-            and _arc_span(verts, fit) > 0.6):
+    if _is_full_ring(verts, fit):
         return True
     shell = _shell_of(verts, fit)
     if shell is None:
         return False
-    f = _fit_circle(shell)
-    return (f is not None and _circle_error(shell, f) is None
-            and _arc_span(shell, f) > 0.6)
+    return _is_full_ring(shell, _fit_circle(shell))
 
 
 def _bisect_by_plane(verts):
@@ -334,9 +338,7 @@ def _is_ring_cycle(cyc):
     """
     if cyc is None or len(cyc) < 6:
         return False
-    f = _fit_circle(cyc)
-    return (f is not None and _circle_error(cyc, f) is None
-            and _arc_span(cyc, f) > 0.6 and _evenly_turning(cyc))
+    return _is_full_ring(cyc, _fit_circle(cyc)) and _evenly_turning(cyc)
 
 
 def _walk_cycle(start, sel, used):
@@ -516,7 +518,7 @@ def _is_single_ring(verts, fit):
     their two real cycles — and like the bisector it never chops a lone ring or
     arc (a single closed walk is not accepted as a split).
     """
-    return (fit is not None and _circle_error(verts, fit) is None
+    return (_is_usable_circle(verts, fit)
             and _bisect_by_plane(verts) is None
             and _trace_rings(verts) is None)
 
@@ -558,7 +560,7 @@ def _find_circles(sel):
         found = []                                # peel apart stacked rings
         for leaf in _split_leaves(comp):
             f = _fit_circle(leaf)
-            if f is not None and _circle_error(leaf, f) is None:
+            if _is_usable_circle(leaf, f):
                 found.append((leaf, f))
         if found:
             circles.extend(found)
@@ -568,8 +570,7 @@ def _find_circles(sel):
 
 
 def _valid_circles(circles):
-    return [(vs, fit) for vs, fit in circles
-            if fit is not None and _circle_error(vs, fit) is None]
+    return [(vs, fit) for vs, fit in circles if _is_usable_circle(vs, fit)]
 
 
 def _apply_radius(verts, center, normal, radius):
