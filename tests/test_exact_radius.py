@@ -12,6 +12,7 @@ Exits non-zero if any check fails.
 import importlib.util
 import math
 import os
+import struct
 import sys
 import time
 
@@ -329,6 +330,153 @@ for i in range(10):
         if j + 1 < 10: bm.edges.new((gg[(i, j)], gg[(i, j + 1)]))
 check("10x10 grid -> 0 circles (trace must not carve blocks)", n_valid(bm) == 0,
       "got %d" % n_valid(bm)); bm.free()
+
+
+# --- a perfect ring must never be shaved (Patrick's field find, 2026-07-25) ---
+# Found on a real 96-ring model: three mathematically perfect rings (residual 0,
+# planarity 0) came back split — 2048 verts into 2044 + 4, and a 32-vert ring
+# into 5 + 23 + 4. Each piece then gets its OWN fitted centre, so the ring comes
+# back subtly deformed. The bisector was inventing the seam: a high-resolution
+# ring has thousands of projections along any in-plane axis, and the widest gap
+# among them looks just like the gap between two stacked rings. It was allowed
+# through because SOME of the resulting clusters were rings. Now, if the piece
+# is already a whole clean circle, a cut only counts when EVERY part is a whole
+# ring too — which is still exactly the wide-short-tube case.
+for _n in (32, 64, 128, 512, 1024, 2048):
+    bm = bmesh.new(); ring_verts(bm, _n, 1.0)
+    _g = ER._find_circles(bm.verts[:])
+    check("perfect ring, %d verts -> exactly 1 group" % _n,
+          len(_g) == 1 and radii(bm) == [1.0], "%d Gruppen %s" % (len(_g), radii(bm)))
+    bm.free()
+
+# tilted and off-origin too — the axes the bisector tries are the data's own
+for _n in (128, 2048):
+    bm = bmesh.new()
+    ring_verts(bm, _n, 7.5, center=(3, -4, 5), normal=(1, 2, -0.5))
+    _g = ER._find_circles(bm.verts[:])
+    check("perfect tilted ring, %d verts -> exactly 1 group" % _n,
+          len(_g) == 1 and radii(bm) == [7.5], "%d Gruppen %s" % (len(_g), radii(bm)))
+    bm.free()
+
+# the point of it: a shaved ring loses its shape. Resize a high-res ring and
+# every vertex must still sit on ONE circle around ONE centre.
+bm = bmesh.new(); _hr = ring_verts(bm, 2048, 1.0)
+for vv in bm.verts: vv.select = True
+_s, _sk = ER._resize_selection(bm, 12.0)
+_c = sum((v.co for v in _hr), Vector()) / len(_hr)
+_d = [(v.co - _c).length for v in _hr]
+check("2048-vert ring resized -> one centre, one radius",
+      (_s, _sk) == (1, 0) and max(_d) - min(_d) < 1e-4,
+      "set=%s spread=%.2e" % ((_s, _sk), max(_d) - min(_d)))
+bm.free()
+
+# Patrick's round trip: 1 -> 50 -> 1 must land back where it started
+bm = bmesh.new(); _rt = ring_verts(bm, 2048, 1.0)
+_before = [v.co.copy() for v in _rt]
+for vv in bm.verts: vv.select = True
+ER._resize_selection(bm, 50.0)
+ER._resize_selection(bm, 1.0)
+_drift = max((v.co - b).length for v, b in zip(_rt, _before))
+check("round trip 1 -> 50 -> 1 comes back exactly", _drift < 1e-5,
+      "max drift %.2e" % _drift); bm.free()
+
+# and the shape this guard must NOT break: a wide short tube still splits into
+# its real rings, because there EVERY cluster is a whole ring
+for _r in (4.0, 20.0, 60.0):
+    bm = stacked([0.0, 2.0], n=64, r=_r)
+    check("wide tube r=%g still splits into 2 rings" % _r, n_valid(bm) == 2,
+          "got %d" % n_valid(bm)); bm.free()
+
+
+# The ring that actually failed, lifted straight out of Patrick's model. It is
+# a unit ring sitting ~110 units from the origin — and Blender stores vertex
+# coordinates as float32, so at that distance the rounding noise is ~0.1 % of
+# the radius. That uneven gap distribution is what the bisector latched onto;
+# a ring built at the origin in float64 is too clean to reproduce it, and a
+# synthetic fixture would have missed this exactly the way one missed the fan
+# lids. Old behaviour: this ring came back split into 5 + 23 + 4.
+_FIELD_RING = [
+    (-22.421476364, -85.531570435, 60.278800964),
+    (-22.60002327, -85.534851074, 60.359668732),
+    (-22.76358223, -85.565124512, 60.463405609),
+    (-22.90586853, -85.621246338, 60.586021423),
+    (-23.021411896, -85.701057434, 60.722805023),
+    (-23.105773926, -85.801475525, 60.868503571),
+    (-23.155712128, -85.918663025, 61.01751709),
+    (-23.169305801, -86.048095703, 61.164112091),
+    (-23.146036148, -86.184814453, 61.302658081),
+    (-23.0867939, -86.323562622, 61.427837372),
+    (-22.993858337, -86.459007263, 61.534832001),
+    (-22.870800018, -86.5859375, 61.619537354),
+    (-22.72234726, -86.699478149, 61.678688049),
+    (-22.554204941, -86.795272827, 61.710021973),
+    (-22.372835159, -86.869628906, 61.71232605),
+    (-22.185209274, -86.919700623, 61.685516357),
+    (-21.998537064, -86.943557739, 61.630622864),
+    (-21.819990158, -86.9402771, 61.549755096),
+    (-21.656431198, -86.910003662, 61.446018219),
+    (-21.514144897, -86.853881836, 61.323402405),
+    (-21.398601532, -86.77407074, 61.186618805),
+    (-21.314239502, -86.673652649, 61.040920258),
+    (-21.2643013, -86.556465149, 60.891906738),
+    (-21.250707626, -86.427032471, 60.745311737),
+    (-21.27397728, -86.290313721, 60.606761932),
+    (-21.333219528, -86.151565552, 60.481586456),
+    (-21.42615509, -86.016120911, 60.374591827),
+    (-21.549213409, -85.889190674, 60.289886475),
+    (-21.697666168, -85.775650024, 60.230735779),
+    (-21.865808487, -85.679855347, 60.199401855),
+    (-22.047176361, -85.605499268, 60.197097778),
+    (-22.234802246, -85.555427551, 60.223907471),
+]
+
+
+def _closed_ring(bm, pts):
+    vs = [bm.verts.new(p) for p in pts]
+    bm.verts.ensure_lookup_table()
+    for i in range(len(vs)):
+        bm.edges.new((vs[i], vs[(i + 1) % len(vs)]))
+    return vs
+
+
+bm = bmesh.new(); _closed_ring(bm, _FIELD_RING)
+_g = ER._find_circles(bm.verts[:])
+check("field ring (unit ring 110 units out) -> exactly 1 group",
+      len(_g) == 1 and len(ER._valid_circles(_g)) == 1,
+      "%d Gruppen: %s" % (len(_g), [len(vs) for vs, _f in _g])); bm.free()
+
+# and as it is actually used: resized, it has to stay ONE circle around ONE
+# centre — a shaved ring gets a second centre and comes back deformed
+bm = bmesh.new(); _fr = _closed_ring(bm, _FIELD_RING)
+for vv in bm.verts: vv.select = True
+_s, _sk = ER._resize_selection(bm, 4.0)
+_c = sum((v.co for v in _fr), Vector()) / len(_fr)
+_d = [(v.co - _c).length for v in _fr]
+check("field ring resized -> one centre, one radius",
+      (_s, _sk) == (1, 0) and max(_d) - min(_d) < 1e-3,
+      "set=%s spread=%.2e" % ((_s, _sk), max(_d) - min(_d))); bm.free()
+
+# same mechanism, generated: distance from the origin is what breaks it, not
+# the vertex count. Rounded to float32 the way Blender stores coordinates.
+def _f32(x):
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+for _dist in (0.0, 50.0, 110.0, 500.0):
+    _ax = Vector((0.3, 0.8, -0.5)).normalized()
+    _e1 = _ax.cross(Vector((1, 0, 0))).normalized()
+    _e2 = _ax.cross(_e1).normalized()
+    _off = Vector((0.2, 0.9, 0.4)).normalized() * _dist
+    _pts = []
+    for _i in range(64):
+        _a = 2 * math.pi * _i / 64
+        _p = _off + math.cos(_a) * _e1 + math.sin(_a) * _e2
+        _pts.append((_f32(_p.x), _f32(_p.y), _f32(_p.z)))
+    bm = bmesh.new(); _closed_ring(bm, _pts)
+    _g = ER._find_circles(bm.verts[:])
+    check("float32 unit ring %g units from origin -> 1 group" % _dist,
+          len(_g) == 1, "%d Gruppen: %s" % (len(_g), [len(vs) for vs, _f in _g]))
+    bm.free()
 
 
 # --- triangle-fan lids (cylinder / cone caps) ---------------------------------
@@ -923,6 +1071,26 @@ except Exception as e:
 check("Add > Grid -> refused, nothing moved", _gerr is not None, "err=%s" % _gerr)
 _to_object_mode()
 bpy.data.objects.remove(_grid, do_unlink=True)
+
+# A torus is a bent tube. Selecting the whole thing is not a documented use,
+# but it is easy to do by accident — and however the splitter reads it (the
+# minor cross-sections or the major rings), every group it hands back must be
+# a WHOLE ring. Half a ring gets its own fitted centre and deforms on resize,
+# which is the same defect the field-ring guard exists for. This checks the
+# property, not the count, so it holds whichever reading wins.
+_to_object_mode(); _deselect_all()
+bpy.ops.mesh.primitive_torus_add(major_segments=24, minor_segments=12,
+                                 major_radius=1.0, minor_radius=0.25)
+_tor = bpy.context.object
+bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
+_b = bmesh.from_edit_mesh(_tor.data)
+_tv = ER._valid_circles(ER._find_circles([v for v in _b.verts if v.select]))
+_spans = [ER._arc_span(vs, f) for vs, f in _tv]
+check("torus -> every group a whole ring, none halved",
+      len(_tv) > 0 and min(_spans) > 0.9,
+      "n=%d kleinster arc_span %.3f" % (len(_tv), min(_spans) if _spans else -1))
+_to_object_mode()
+bpy.data.objects.remove(_tor, do_unlink=True)
 
 
 # --- speed --------------------------------------------------------------------

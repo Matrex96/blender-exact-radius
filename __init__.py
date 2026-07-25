@@ -239,7 +239,7 @@ def _is_ring_cluster(verts):
     return _is_full_ring(shell, _fit_circle(shell))
 
 
-def _bisect_by_plane(verts):
+def _bisect_by_plane(verts, fit=None):
     """Split a component into parallel clusters along its stacking axis.
 
     Pulls apart rings stacked in one connected piece (several cross-sections of a
@@ -250,10 +250,23 @@ def _bisect_by_plane(verts):
     only slice the rings into arcs — so the axis that yields real circles wins,
     regardless of the ring count. A filled face/blob yields no circles and keeps
     its span filled, so it is left unsplit. Returns >= 2 vertex groups or None.
+
+    `fit` is the caller's already-computed _fit_circle for the same vertices,
+    passed in to save a fit — it decides how strict the split has to be (below).
     """
     if len(verts) < 6:
         return None
     vlist = list(verts)
+    # Is the piece ALREADY one clean, all-the-way-round circle? Then a cut is
+    # only believable if every single part of it is a whole ring too — which is
+    # exactly the wide-short-tube case this function exists for, where the rings
+    # stack so tightly that the whole tube still reads as one flat circle.
+    # Anything less (one big ring plus a few shaved-off vertices) is the
+    # bisector inventing a seam in a perfect circle: a high-resolution ring has
+    # thousands of projections along any in-plane axis, and the widest gap among
+    # them can look like a ring-to-ring gap. Those few vertices then get their
+    # own fitted centre and the ring comes back subtly deformed.
+    whole_is_ring = _is_full_ring(vlist, _fit_circle(vlist) if fit is None else fit)
     pts = np.array([v.co[:] for v in vlist], dtype=float)
     Q = pts - pts.mean(axis=0)
     try:
@@ -300,15 +313,20 @@ def _bisect_by_plane(verts):
         # "all rings". The tie-breaker (below) prefers the reading with the
         # FEWEST, biggest rings, which is the real cross-section; sideways wedge
         # readings always produce more rings, so they lose.
-        clean = 0
-        for g in groups:
-            if _is_ring_cluster(g):
-                clean += 1
+        whole_rings = [_is_ring_cluster(g) for g in groups]
+        clean = sum(whole_rings)
         if clean == 0:
             return None
         if clean == len(groups):
             key = (2, -len(groups), sep)     # every cluster a ring -> fewest wins
         else:
+            # Only SOME clusters are rings. If the piece is already one clean
+            # circle, that is the bisector shaving slivers off a perfect ring
+            # rather than finding real rings in it — refuse, unless what falls
+            # away is substantial enough to be genuine structure.
+            fell_away = sum(len(g) for g, ok in zip(groups, whole_rings) if not ok)
+            if whole_is_ring and fell_away * 2 < len(vlist):
+                return None
             key = (1, clean, sep)            # only some clusters are rings
         return key, groups
 
@@ -518,8 +536,17 @@ def _is_single_ring(verts, fit):
     their two real cycles — and like the bisector it never chops a lone ring or
     arc (a single closed walk is not accepted as a split).
     """
-    return (_is_usable_circle(verts, fit)
-            and _bisect_by_plane(verts) is None
+    if not _is_usable_circle(verts, fit):
+        return False
+    # One closed loop that fits a whole circle IS one ring — nothing else can
+    # be hiding in it. Rings stacked in a tube are joined by edges ACROSS the
+    # rings, so their vertices have four neighbours, not two; and a lone loop
+    # that wanders out of a plane (a coil) fails the circle fit above. Worth
+    # taking on its own: this is the shape of nearly every real selection, and
+    # it skips both the bisector's sort of every projection and the tracer.
+    if _is_simple_loop(verts) and _is_full_ring(verts, fit):
+        return True
+    return (_bisect_by_plane(verts, fit) is None
             and _trace_rings(verts) is None)
 
 
@@ -533,7 +560,7 @@ def _split_leaves(verts, depth=0):
     fit = _fit_circle(verts)
     if _is_single_ring(verts, fit) or depth >= 8:
         return [verts]
-    parts = _bisect_by_plane(verts)
+    parts = _bisect_by_plane(verts, fit)
     if not parts:
         parts = _trace_rings(verts)     # coplanar bridged rings — no axis gap
     if not parts:

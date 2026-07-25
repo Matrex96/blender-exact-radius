@@ -22,6 +22,19 @@ every uploaded version carries its own review status there.)_
 ---
 
 ## 1.10.1 — 2026-07-25
+- Fix: **a perfect ring is no longer shaved.** Found on a real 96-ring model:
+  rings that are mathematically flawless (residual 0, planarity 0) came back
+  split — 2048 vertices into 2044 + 4, a 32-vertex ring into 5 + 23 + 4. Each
+  piece then gets its own fitted centre, so the ring comes back subtly
+  deformed. The plane bisector was inventing the seam: a flat ring has no
+  extent at all along its own normal, so what it measures there is float noise
+  (Blender stores coordinates as float32, and a ring a hundred units from the
+  origin wobbles by a millionth of its own size) — and a gap detector let loose
+  on noise duly finds a "gap". It got through because SOME of the resulting
+  clusters were rings. Now, when the piece is already one clean circle, a cut
+  that merely sheds slivers is refused; a cut where the parts are substantial
+  still stands, which is exactly the wide-short-tube case the bisector exists
+  for. A whole torus keeps reading as its 12 rings, none of them halved.
 - Fix: **triangle-fan lids now work.** Every cylinder, cone and circle added
   with "Cap Fill Type: Triangle Fan" carries a hub vertex in the middle of each
   lid. That hub sits at radius 0, a full radius off the ring, so the lid failed
@@ -55,13 +68,16 @@ every uploaded version carries its own review status there.)_
   - 200 rings / 3200 verts, core: 308 ms → 39 ms
   - a single 1024-vertex ring: 30 ms → 2.6 ms
   - a 60x60 grid being refused: 208 ms → 156 ms
+  - a real 96-ring model, 99 840 verts: 7708 ms → 171 ms
   - That same give-up rule also makes the tracer more accurate: a UV sphere used
     to be carved into 20 pieces, now 9.
-- Tests: 103 → 122 checks, green on 4.5 LTS / 5.1 / 5.3. New: triangle-fan lids
+- Tests: 103 → 142 checks, green on 4.5 LTS / 5.1 / 5.3. New: triangle-fan lids
   (flat, tilted, resized, on a capped cylinder), shapes straight from the Add
   menu run through the real operator (cylinder/cone/circle in every cap fill
-  type, sphere, grid), and speed floors — the circles are found exactly once
-  per run and a heavy selection stays well inside 200 ms. All 11 of the new
+  type, sphere, grid, torus), the ring from the field model that was being
+  shaved — kept as its real coordinates, because a ring generated at the origin
+  is too clean to reproduce it — and speed floors: the circles are found exactly
+  once per run and a heavy selection stays well inside 200 ms. 13 of the new
   checks fail against 1.10.0.
 
 ## 1.10.0 — 2026-07-02
