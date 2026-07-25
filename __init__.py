@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Exact Radius",
     "author": "Patrick Tiefenbacher",
-    "version": (1, 10, 0),
+    "version": (1, 10, 1),
     "blender": (4, 2, 0),
     "location": "Edit Mode > Vertex Menu > Exact Radius (default Alt+R)",
     "description": (
@@ -26,6 +26,11 @@ from bpy.props import FloatProperty, EnumProperty, BoolProperty
 # A selection is rejected as "not a circle" beyond these limits (see _circle_error)
 PLANARITY_MAX = 0.25    # how far out of a single plane the points may sit
 RESIDUAL_MAX = 0.20     # how far from a perfect circle the points may sit (rel.)
+# A ring-tracing walk gives up once even its best next vertex sits this far off
+# the circle traced so far (relative to the radius). Nothing beyond this could
+# still pass RESIDUAL_MAX, so walking on only burns time — and a walk that has
+# wandered off a ring wanders for the whole component if it is not stopped.
+STEP_MAX = 0.35
 
 # Tiny safe arithmetic evaluator for the modal entry, so the user can type a
 # math expression like "20/2" (diameter -> radius). Only numbers and + - * / and
@@ -181,6 +186,55 @@ def _arc_span(verts, fit):
     return 1.0 - biggest / (2.0 * np.pi)
 
 
+def _shell_of(verts, fit):
+    """The outer ring of a group, with vertices sitting well inside it dropped.
+
+    A triangle-fan lid is a ring plus ONE hub vertex at radius 0. That hub is a
+    tiny minority of the points but it sits a full radius off the circle, so it
+    drags the fit's residual over the limit and the whole lid reads as "not a
+    circle". Peeling the inside off costs one pass over the points (the fit is
+    already in hand), and the caller re-fits the shell.
+
+    Returns the shell, or None when there is nothing inside to peel or the
+    inside is too big a share to be hubs (then the group is a real blob).
+    """
+    if fit is None:
+        return None
+    c, nrm, radius = fit[0], fit[1], fit[2]
+    shell, inside = [], 0
+    for v in verts:
+        d = v.co - c
+        if (d - d.dot(nrm) * nrm).length < 0.5 * radius:
+            inside += 1
+        else:
+            shell.append(v)
+    if inside == 0 or len(shell) < 6 or inside * 3 > len(verts):
+        return None
+    return shell
+
+
+def _is_ring_cluster(verts):
+    """True if `verts` is a whole cross-section ring — hub or no hub.
+
+    Used to score a plane-bisector cut: a cut along the real stacking axis
+    turns a piece into whole rings, while any other axis only slices them into
+    arcs. A capped cylinder cuts into triangle-fan LIDS, which are whole rings
+    with a hub in the middle — so the fit is retried on the shell alone before
+    the cluster is written off, otherwise the true axis is never recognised and
+    the piece falls to the ring tracer, which carves it into nonsense.
+    """
+    fit = _fit_circle(verts)
+    if (fit is not None and _circle_error(verts, fit) is None
+            and _arc_span(verts, fit) > 0.6):
+        return True
+    shell = _shell_of(verts, fit)
+    if shell is None:
+        return False
+    f = _fit_circle(shell)
+    return (f is not None and _circle_error(shell, f) is None
+            and _arc_span(shell, f) > 0.6)
+
+
 def _bisect_by_plane(verts):
     """Split a component into parallel clusters along its stacking axis.
 
@@ -244,9 +298,7 @@ def _bisect_by_plane(verts):
         # readings always produce more rings, so they lose.
         clean = 0
         for g in groups:
-            f = _fit_circle(g)
-            if (f is not None and _circle_error(g, f) is None
-                    and _arc_span(g, f) > 0.6):
+            if _is_ring_cluster(g):
                 clean += 1
         if clean == 0:
             return None
@@ -272,15 +324,41 @@ def _bisect_by_plane(verts):
     return best[1]
 
 
+def _is_ring_cycle(cyc):
+    """True if a traced closed walk may be claimed as one real ring.
+
+    A clean, nearly full, evenly-turning circle of at least 6 vertices. The
+    even-turning test is what keeps the tracer from carving block outlines out
+    of a filled face patch: those outlines do fit a circle within tolerance,
+    so shape alone cannot reject them (see _evenly_turning).
+    """
+    if cyc is None or len(cyc) < 6:
+        return False
+    f = _fit_circle(cyc)
+    return (f is not None and _circle_error(cyc, f) is None
+            and _arc_span(cyc, f) > 0.6 and _evenly_turning(cyc))
+
+
 def _walk_cycle(start, sel, used):
-    """One closed walk from `start` over unused selected verts, or None.
+    """The best closed walk from `start` over unused selected verts, or None.
 
     At every step take the neighbour that best continues the ring traced so
     far: once a running circle fit exists, the candidate closest to that
     circle wins; before that (the first, nearly straight steps) the
     straightest continuation wins. A bridge edge points far off the running
     circle, so the walk stays on its own ring and closes there.
+
+    The FIRST step is the exception: there is no direction to continue yet, so
+    it can only be tried in every direction. A triangle-fan hub is an ordinary
+    neighbour at that point, and stepping onto it first traces a star through
+    the middle of the lid instead of its ring — which then reads as "not a
+    circle" and loses the ring entirely. Which direction came first in
+    `link_edges` decided that, so the same lid worked or failed depending on
+    how the mesh was built. Every direction is walked instead, and the first
+    one that closes into a real ring wins; the longest closed walk is only the
+    fallback.
     """
+    fallback = None
     for first in start.link_edges:
         second = first.other_vert(start)
         if second not in sel or second in used:
@@ -312,11 +390,17 @@ def _walk_cycle(start, sel, used):
                     best, best_score = w, score
             if best is None:
                 break                           # dead end — try the other way
-            if best is start:
-                return path                     # closed
+            if fit is not None and best_score > STEP_MAX:
+                break        # even the best next step is nowhere near the ring
+            if best is start:                   # closed
+                if _is_ring_cycle(path):
+                    return path
+                if fallback is None or len(path) > len(fallback):
+                    fallback = path
+                break                           # closed, but not a ring
             path.append(best)
             in_path.add(best)
-    return None
+    return fallback
 
 
 def _evenly_turning(cycle):
@@ -343,6 +427,31 @@ def _evenly_turning(cycle):
             and min(turns) >= 0.3 * mean)
 
 
+def _is_simple_loop(verts):
+    """True if the selection is one plain closed ring and nothing else.
+
+    Every vertex has exactly two neighbours inside the selection and it all
+    hangs together: then there is nothing branching off it, nothing inside it
+    and no second ring, so tracing can only ever hand back the piece itself.
+    This is the shape of almost every real selection — a hole, an edge loop —
+    and the walk it saves costs a circle fit at every single step, so the two
+    cheap passes over the vertices here pay for themselves many times over.
+    """
+    sel = set(verts)
+    if len(sel) < 3:
+        return False
+    for v in verts:
+        n = 0
+        for e in v.link_edges:
+            if e.other_vert(v) in sel:
+                n += 1
+                if n > 2:
+                    return False
+        if n != 2:
+            return False
+    return len(_connected_groups(verts)) == 1
+
+
 def _trace_rings(verts):
     """Fallback splitter for rings the plane-bisector cannot separate.
 
@@ -351,10 +460,19 @@ def _trace_rings(verts):
     axis, so _bisect_by_plane returns None for them. Here the edge graph
     itself is followed instead: every closed best-continuation walk that is a
     clean, nearly full, evenly-turning circle of >= 6 verts claims its verts
-    as one ring. Only accepted when at least TWO such cycles exist — a lone
-    cycle (e.g. the perimeter of a face patch) must never split anything.
+    as one ring.
+
+    A result only counts as a SPLIT when it actually takes the piece apart:
+    either two or more rings were traced, or one ring was traced and vertices
+    are left over that it does not contain. The second case is the triangle-fan
+    lid every capped cylinder is made of — a ring plus one hub vertex at radius
+    0 — where the ring is real but there is only ever one cycle. A lone cycle
+    that covers EVERY vertex is just the piece itself (a plain ring, or the
+    perimeter of a face patch) and must never split anything.
     Returns >= 2 groups or None.
     """
+    if _is_simple_loop(verts):
+        return None                     # one plain ring — nothing to peel
     used = set()
     cycles = []
     sel = set(verts)
@@ -363,18 +481,18 @@ def _trace_rings(verts):
         if start in used or failed > 32:
             continue
         cyc = _walk_cycle(start, sel, used)
-        f = _fit_circle(cyc) if cyc else None
-        if (cyc is not None and len(cyc) >= 6
-                and f is not None and _circle_error(cyc, f) is None
-                and _arc_span(cyc, f) > 0.6
-                and _evenly_turning(cyc)):
+        if _is_ring_cycle(cyc):
             cycles.append(cyc)
             used.update(cyc)
         else:
             failed += 1
-    if len(cycles) < 2:
+    if not cycles:
         return None
     left = [v for v in verts if v not in used]
+    if len(cycles) < 2 and (not left or len(left) * 2 >= len(verts)):
+        # the lone cycle is the piece itself (nothing left over), or what it
+        # leaves behind outweighs it — either way it peeled nothing off
+        return None
     return cycles + (_connected_groups(left) if left else [])
 
 
@@ -464,15 +582,21 @@ def _apply_radius(verts, center, normal, radius):
             v.co = center + radial * (radius / rl)
 
 
-def _resize_selection(bm, radius, cursor=None):
+def _resize_selection(bm, radius, cursor=None, circles=None):
     """Set every circle in this bmesh's selection to `radius`.
 
     `cursor` (a local-space Vector) overrides the fitted center when given.
+    `circles` is an already-computed _find_circles result for this same
+    selection — the operator has to find the circles up front anyway (to count
+    them and to refuse an unusable selection), and finding them is by far the
+    most expensive thing this add-on does, so it hands the result back in
+    rather than paying for it twice.
     Returns (set_count, skipped_count); skipped are selected groups that are not
     usable circles. This is the per-mesh building block the operator runs for
     each object that is in edit mode.
     """
-    circles = _find_circles(_selected_verts(bm))
+    if circles is None:
+        circles = _find_circles(_selected_verts(bm))
     valid = _valid_circles(circles)
     for verts, fit in valid:
         _apply_radius(verts, fit[0] if cursor is None else cursor, fit[1], radius)
@@ -609,12 +733,17 @@ class MESH_OT_exact_radius(bpy.types.Operator):
 
     def execute(self, context):
         meshes = _edit_meshes(context)
-        # count first (across all objects) to error out and to decide whether a
-        # 3D-cursor center applies (only meaningful for a single circle total)
+        # Find the circles ONCE per mesh and keep them: the counts decide
+        # whether to refuse the selection at all and whether a 3D-cursor center
+        # applies (only meaningful for a single circle total), and the very same
+        # groups are then what gets resized. The bmesh wrappers are kept in the
+        # list too, so nothing collects them out from under their verts.
+        found = []
         total_valid = total_circles = 0
         for o in meshes:
-            bm = bmesh.from_edit_mesh(o.data)   # keep a ref so its verts stay alive
+            bm = bmesh.from_edit_mesh(o.data)
             circles = _find_circles(_selected_verts(bm))
+            found.append((o, bm, circles))
             total_valid += len(_valid_circles(circles))
             total_circles += len(circles)
         if total_valid == 0:
@@ -622,11 +751,10 @@ class MESH_OT_exact_radius(bpy.types.Operator):
                         "Selection is not a circle — select a ring of vertices")
             return {'CANCELLED'}
         single = total_valid == 1
-        for o in meshes:
-            bm = bmesh.from_edit_mesh(o.data)
+        for o, bm, circles in found:
             cursor = (_local_cursor(context, o)
                       if self.center_mode == 'CURSOR' and single else None)
-            _resize_selection(bm, self.radius, cursor)
+            _resize_selection(bm, self.radius, cursor, circles)
             bmesh.update_edit_mesh(o.data)
         n = total_valid
         skipped = total_circles - total_valid

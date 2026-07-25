@@ -330,6 +330,65 @@ for i in range(10):
 check("10x10 grid -> 0 circles (trace must not carve blocks)", n_valid(bm) == 0,
       "got %d" % n_valid(bm)); bm.free()
 
+
+# --- triangle-fan lids (cylinder / cone caps) ---------------------------------
+# A TRIFAN lid is a ring plus ONE centre vertex joined to every ring vertex. The
+# centre sits at radius 0, so a circle fit over the whole lid is far off and the
+# lid was rejected outright ("not a circle") — the ring was never even offered.
+# The tracer does find the ring; it only threw it away because it insisted on
+# >= 2 cycles. A lone cycle that leaves vertices over IS a split (ring + hub).
+def fan_cap(bm, n=16, radius=1.0, center=(0, 0, 0), normal=(0, 0, 1)):
+    """A triangle-fan lid: returns (ring verts, centre vert)."""
+    vs = ring_verts(bm, n, radius, center=center, normal=normal)
+    c = bm.verts.new(Vector(center))
+    bm.verts.ensure_lookup_table()
+    for v in vs:
+        bm.edges.new((c, v))
+    return vs, c
+
+
+bm = bmesh.new(); fan_cap(bm)
+check("TRIFAN lid -> 1 circle r=1", radii(bm) == [1.0], "%s" % radii(bm)); bm.free()
+
+bm = bmesh.new(); fan_cap(bm, n=32, radius=5.0, center=(2, -3, 4), normal=(1, 1, 0))
+check("TRIFAN lid tilted / off-origin -> 1 circle r=5", radii(bm) == [5.0],
+      "%s" % radii(bm)); bm.free()
+
+# resizing a lid moves the ring only — the hub has no radial direction and is
+# already the centre, so it must stay exactly where it is
+bm = bmesh.new(); _ring, _hub = fan_cap(bm, radius=1.0)
+for vv in bm.verts: vv.select = True
+_s, _sk = ER._resize_selection(bm, 3.0)
+check("TRIFAN lid resize -> ring r=3, hub stays at centre",
+      (_s, _sk) == (1, 0)
+      and all(abs(v.co.length - 3.0) < 1e-6 for v in _ring)
+      and _hub.co.length < 1e-9,
+      "set=%s ring=%.4f hub=%.4f" % ((_s, _sk), _ring[0].co.length, _hub.co.length))
+bm.free()
+
+# the real-world shape: a cylinder with TRIFAN caps on both ends. Both lids must
+# come out as their own ring — this is what Patrick's cylinders actually look
+# like straight out of Add > Cylinder (Cap Fill Type: Triangle Fan).
+bm = bmesh.new()
+_lo = ring_verts(bm, 16, 1.0, center=(0, 0, 0))
+_hi = ring_verts(bm, 16, 1.0, center=(0, 0, 2))
+for a, b in zip(_lo, _hi): bm.edges.new((a, b))
+_cl = bm.verts.new(Vector((0, 0, 0))); _ch = bm.verts.new(Vector((0, 0, 2)))
+bm.verts.ensure_lookup_table()
+for v in _lo: bm.edges.new((_cl, v))
+for v in _hi: bm.edges.new((_ch, v))
+check("TRIFAN-capped cylinder -> 2 rings r=1", radii(bm) == [1.0, 1.0],
+      "%s" % radii(bm)); bm.free()
+
+# guard the relaxed rule: a plain lone ring must NOT be seen as a split (the
+# cycle covers every vertex, so there is nothing left over and nothing to peel)
+bm = bmesh.new(); _r = ring_verts(bm, 24, 2.0)
+check("lone ring is not a trace split", ER._trace_rings(bm.verts[:]) is None,
+      "got %s" % (ER._trace_rings(bm.verts[:]) is not None)); bm.free()
+
+bm = bmesh.new(); ring_verts(bm, 24, 2.0, arc=math.pi)
+check("lone arc is not a trace split", ER._trace_rings(bm.verts[:]) is None); bm.free()
+
 # --- 4. register / unregister -------------------------------------------------
 section("register / keymap")
 def km_count():
@@ -751,6 +810,180 @@ check("op cursor multi: cursor ignored, own centers kept",
 bpy.context.scene.cursor.location = _old_cursor
 for _o in (oma, omb):
     bpy.data.objects.remove(_o, do_unlink=True)
+
+# --- real Blender primitives --------------------------------------------------
+# Hand-built bmesh rings are not enough. The triangle-fan lid bug hid behind
+# exactly that: a lid built here (ring edges first, then the spokes) traced fine
+# while Add > Cylinder failed, because the walk simply took whichever edge came
+# first in link_edges. Shapes people actually make must go through the real
+# operator, straight from the Add menu.
+section("real primitives (Add menu -> operator)")
+
+
+def _to_object_mode():
+    """Back to Object Mode, tolerating a stale active object.
+
+    Tests remove their objects when done, which can leave the view layer with a
+    dangling / hidden active object — and then mode_set's poll refuses with
+    "Cannot edit hidden object" and takes the whole run down with it.
+    """
+    if bpy.context.mode == 'OBJECT':
+        return
+    try:
+        _to_object_mode()
+    except RuntimeError:
+        bpy.context.view_layer.objects.active = None
+
+
+def _primitive(add, **props):
+    """Add a primitive, run the operator on everything, return radial distances
+    from the object's Z axis (rounded) plus the operator result."""
+    _to_object_mode()
+    _deselect_all()
+    add()
+    o = bpy.context.object
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    res = err = None
+    try:
+        res = bpy.ops.mesh.exact_radius('EXEC_DEFAULT', radius=3.0, **props)
+    except Exception as e:                      # a raised error is a FAIL, not a crash
+        err = repr(e)
+    b = bmesh.from_edit_mesh(o.data)
+    rs = sorted({round(math.hypot(v.co.x, v.co.y), 3) for v in b.verts})
+    _to_object_mode()
+    bpy.data.objects.remove(o, do_unlink=True)
+    return rs, res, err
+
+
+# TRIFAN lids: the ring must land on the radius, the hub stays at 0 (it has no
+# radial direction, and it already IS the center)
+_rs, _res, _err = _primitive(lambda: bpy.ops.mesh.primitive_cylinder_add(
+    vertices=16, radius=1.0, depth=2.0, end_fill_type='TRIFAN'))
+check("Add > Cylinder (TRIFAN caps) -> rings at 3, hubs at 0",
+      _err is None and _res == {'FINISHED'} and _rs == [0.0, 3.0],
+      "err=%s res=%s radii=%s" % (_err, _res, _rs))
+
+_rs, _res, _err = _primitive(lambda: bpy.ops.mesh.primitive_cylinder_add(
+    vertices=64, radius=1.0, depth=2.0, end_fill_type='TRIFAN'))
+check("Add > Cylinder 64-seg (TRIFAN) -> rings at 3, hubs at 0",
+      _err is None and _rs == [0.0, 3.0], "err=%s radii=%s" % (_err, _rs))
+
+_rs, _res, _err = _primitive(lambda: bpy.ops.mesh.primitive_cone_add(
+    vertices=32, radius1=1.0, radius2=0.0, depth=2.0, end_fill_type='TRIFAN'))
+check("Add > Cone (TRIFAN base) -> base ring at 3",
+      _err is None and _res == {'FINISHED'} and 3.0 in _rs,
+      "err=%s res=%s radii=%s" % (_err, _res, _rs))
+
+_rs, _res, _err = _primitive(lambda: bpy.ops.mesh.primitive_circle_add(
+    vertices=32, radius=1.0, fill_type='TRIFAN'))
+check("Add > Circle (TRIFAN disc) -> ring at 3, hub at 0",
+      _err is None and _rs == [0.0, 3.0], "err=%s radii=%s" % (_err, _rs))
+
+# and the fills that always worked must keep working
+for _fill in ('NGON', 'NOTHING'):
+    _rs, _res, _err = _primitive(lambda f=_fill: bpy.ops.mesh.primitive_cylinder_add(
+        vertices=16, radius=1.0, depth=2.0, end_fill_type=f))
+    check("Add > Cylinder (%s caps) -> both rings at 3" % _fill,
+          _err is None and _rs == [3.0], "err=%s radii=%s" % (_err, _rs))
+
+_rs, _res, _err = _primitive(lambda: bpy.ops.mesh.primitive_circle_add(
+    vertices=32, radius=1.0, fill_type='NGON'))
+check("Add > Circle (NGON disc) -> ring at 3", _err is None and _rs == [3.0],
+      "err=%s radii=%s" % (_err, _rs))
+
+# A whole UV sphere is not a supported selection — it is a solid, not a ring —
+# and what the tracer makes of one depends on the sphere's own topology, which
+# differs between Blender versions. So this only pins down that it does not
+# EXPLODE: on 5.1/5.3 the tracer used to invent 20 pieces out of 34 real rows.
+# The equator has to be among whatever it does find.
+_to_object_mode(); _deselect_all()
+bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=8)
+_sph = bpy.context.object
+bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
+_b = bmesh.from_edit_mesh(_sph.data)
+_sv = ER._valid_circles(ER._find_circles([v for v in _b.verts if v.select]))
+_n = len(_sv)
+check("uv sphere 16x8 -> a handful of rings, equator among them",
+      2 <= _n <= 12 and any(abs(f[2] - 1.0) < 1e-3 for _vs, f in _sv),
+      "n=%d radii=%s" % (_n, sorted({round(f[2], 3) for _vs, f in _sv})))
+_to_object_mode()
+bpy.data.objects.remove(_sph, do_unlink=True)
+
+# a flat grid is not a circle and must stay refused through the real operator
+_to_object_mode(); _deselect_all()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=10, y_subdivisions=10)
+_grid = bpy.context.object
+bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
+_gerr = None
+try:
+    bpy.ops.mesh.exact_radius('EXEC_DEFAULT', radius=3.0)
+except Exception as e:
+    _gerr = repr(e)
+check("Add > Grid -> refused, nothing moved", _gerr is not None, "err=%s" % _gerr)
+_to_object_mode()
+bpy.data.objects.remove(_grid, do_unlink=True)
+
+
+# --- speed --------------------------------------------------------------------
+# Finding the circles is by far the most expensive thing here, and the operator
+# used to do it twice per run (once to count, once to resize) — plus a third
+# time in invoke. Every F9 tweak paid the whole bill again. These two checks
+# nail down that it happens once and that a heavy selection stays well inside
+# the ~200 ms where an action still feels instant.
+section("speed")
+
+_calls = {"n": 0}
+_real_find = ER._find_circles
+
+
+def _counting_find(sel):
+    _calls["n"] += 1
+    return _real_find(sel)
+
+
+_deselect_all()
+_perf_me = bpy.data.meshes.new("ER_perf")
+_perf_obj = bpy.data.objects.new("ER_perf", _perf_me)
+bpy.context.scene.collection.objects.link(_perf_obj)
+_pb = bmesh.new()
+for _i in range(100):                       # 100 holes in a plate
+    ring_verts(_pb, 16, 1.0, center=(_i * 3, (_i % 10) * 3, 0))
+_pb.to_mesh(_perf_me); _pb.free()
+
+ER._find_circles = _counting_find
+try:
+    _t0 = time.perf_counter()
+    _res, _err = _run_operator_on([_perf_obj], _perf_obj, 0.7)
+    _dt = time.perf_counter() - _t0
+finally:
+    ER._find_circles = _real_find
+
+check("operator finds the circles exactly once", _calls["n"] == 1,
+      "called %d times" % _calls["n"])
+check("100 rings / 1600 verts resized in well under 200 ms",
+      _err is None and _res == {'FINISHED'} and _dt < 0.2,
+      "%.1f ms" % (_dt * 1000))
+
+# the pure core on the same load, so a slow-down is visible even if the operator
+# glue changes around it
+_pb = bmesh.new()
+for _i in range(100):
+    ring_verts(_pb, 16, 1.0, center=(_i * 3, (_i % 10) * 3, 0))
+_t0 = time.perf_counter(); _found = n_valid(_pb); _dt = time.perf_counter() - _t0
+check("_find_circles: 100 rings under 100 ms", _found == 100 and _dt < 0.1,
+      "%d in %.1f ms" % (_found, _dt * 1000))
+_pb.free()
+
+# a plain ring must not pay for the ring tracer at all (the walk fits a circle
+# at every step); 1024 verts is a heavily subdivided hole
+_pb = bmesh.new(); ring_verts(_pb, 1024, 5.0)
+_t0 = time.perf_counter(); _found = n_valid(_pb); _dt = time.perf_counter() - _t0
+check("_find_circles: single 1024-vert ring under 20 ms", _found == 1 and _dt < 0.02,
+      "%d in %.1f ms" % (_found, _dt * 1000))
+_pb.free()
+
+bpy.data.objects.remove(_perf_obj, do_unlink=True)
 
 # --- summary ------------------------------------------------------------------
 nf = _results.count(False)

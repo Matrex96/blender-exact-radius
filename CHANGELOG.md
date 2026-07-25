@@ -8,15 +8,61 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.10.0  | 2026-07-02 | — | built; new: coplanar bridged circles are found and set (incl. spoked wheels and small-to-big round-trips) |
-| 1.9.4   | 2026-06-28 | — | built; addresses reviewer feedback (`__package__`) — upload as the review update |
-| 1.9.3   | 2026-06-25 | — | built; superseded by 1.9.4 (not uploaded) |
+| 1.10.1  | 2026-07-25 | — | built; triangle-fan lids, and a much faster core |
+| 1.10.0  | 2026-07-02 | — | built, never uploaded — superseded by 1.10.1 |
+| 1.9.4   | 2026-06-28 | 2026-06-28 | **Approved 2026-06-28 — LIVE.** Addressed the reviewer's `__package__` note |
+| 1.9.3   | 2026-06-25 | 2026-06-26 | uploaded, still "Awaiting Review" — superseded by 1.9.4 |
 | 1.9.2   | 2026-06-24 | — | superseded by 1.9.3 (not uploaded) |
-| 1.9.1   | 2026-06-23 | 2026-06-23 | submitted — awaiting moderation |
+| 1.9.1   | 2026-06-23 | 2026-06-23 | first submission — superseded by 1.9.4 |
 
-_(Mark "Uploaded" + status here whenever a version is submitted/approved.)_
+_(Mark "Uploaded" + status here whenever a version is submitted/approved. The
+truth is on <https://extensions.blender.org/add-ons/exact-radius/versions/> —
+every uploaded version carries its own review status there.)_
 
 ---
+
+## 1.10.1 — 2026-07-25
+- Fix: **triangle-fan lids now work.** Every cylinder, cone and circle added
+  with "Cap Fill Type: Triangle Fan" carries a hub vertex in the middle of each
+  lid. That hub sits at radius 0, a full radius off the ring, so the lid failed
+  a circle fit and the ring was never offered. Small lids were refused outright
+  ("not a circle"); larger ones slipped under the tolerance and were set to a
+  slightly wrong radius; and a whole capped cylinder was carved into wedges and
+  wrecked (a 16-segment one came back with eight different radii). Now the lid
+  is recognised, its ring goes to the target radius and the hub stays where it
+  is — it has no radial direction and it already is the centre.
+  - The plane bisector no longer writes a lid off as "not a cross-section": it
+    retries the fit on the ring alone, so the real stacking axis of a capped
+    tube is found again.
+  - A traced ring that leaves vertices over now counts as a split, so the ring
+    can be peeled off its hub. A lone ring that covers the whole piece still
+    splits nothing.
+  - The tracing walk no longer depends on which edge happens to come first in
+    the mesh. It used to take whatever direction `link_edges` offered, and on a
+    lid that first step could be the spoke into the hub — tracing a star
+    through the middle instead of the ring. It now tries each direction and
+    keeps the one that closes into a real ring. The same lid worked or failed
+    purely on how the mesh had been built, which is why hand-built test rings
+    passed while Add > Cylinder did not.
+- Faster — a lot. The add-on's one expensive job is finding the circles, and
+  the operator did it twice per run (once to count, once to resize) on top of
+  once more in invoke, so every F9 tweak paid the whole bill again. It now
+  happens once. A plain ring also skips the ring tracer entirely (two cheap
+  passes over the vertices decide it, instead of a circle fit at every step of
+  a walk), and a walk gives up as soon as its best next vertex is nowhere near
+  the ring it is tracing.
+  - 100 holes / 1600 verts through the operator: **314 ms → 21 ms**
+  - 200 rings / 3200 verts, core: 308 ms → 39 ms
+  - a single 1024-vertex ring: 30 ms → 2.6 ms
+  - a 60x60 grid being refused: 208 ms → 156 ms
+  - That same give-up rule also makes the tracer more accurate: a UV sphere used
+    to be carved into 20 pieces, now 9.
+- Tests: 103 → 122 checks, green on 4.5 LTS / 5.1 / 5.3. New: triangle-fan lids
+  (flat, tilted, resized, on a capped cylinder), shapes straight from the Add
+  menu run through the real operator (cylinder/cone/circle in every cap fill
+  type, sphere, grid), and speed floors — the circles are found exactly once
+  per run and a heavy selection stays well inside 200 ms. All 11 of the new
+  checks fail against 1.10.0.
 
 ## 1.10.0 — 2026-07-02
 - New: circles lying in the SAME plane and bridged into one connected piece
