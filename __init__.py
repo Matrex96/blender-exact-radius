@@ -346,8 +346,17 @@ def _bisect_by_plane(verts, fit=None):
         gv = [float(gaps[j]) for j in ranked]
         if gv[0] < tiny:
             return None
+        # Never propose more cuts than could survive the sliver test below: every
+        # cluster needs 3 vertices, so anything past vlist/3 pieces is dead on
+        # arrival. Without that bound a knee deep in the tail could win — one
+        # vertex missing from a hand-picked loop tilts the axis a few degrees,
+        # the within-ring gaps stop being exactly zero, and thirty two-vertex
+        # cuts would score best. That reading is then thrown out for its slivers
+        # and takes the whole (correct) axis down with it, leaving an in-plane
+        # axis to carve the tube into wedges and call them circles.
+        max_cuts = min(gaps.size, 1 + len(vlist) // 3)
         best_i, best_ratio = 1, 0.0
-        for i in range(1, gaps.size):
+        for i in range(1, max_cuts):
             ratio = gv[i - 1] / max(gv[i], tiny)
             if ratio > best_ratio:
                 best_ratio, best_i = ratio, i

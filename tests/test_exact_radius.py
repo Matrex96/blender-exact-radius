@@ -1058,6 +1058,22 @@ check("uv sphere 16x8 -> a handful of rings, equator among them",
 _to_object_mode()
 bpy.data.objects.remove(_sph, do_unlink=True)
 
+# Suzanne is the most tangled thing in the Add menu and, like the sphere, not a
+# supported selection. She is however the best guard available against a
+# splitter that starts inventing rings in complicated geometry, which is the way
+# a change to the bisector or the tracer goes wrong. The exact count depends on
+# the version's mesh, so this only pins the league.
+_to_object_mode(); _deselect_all()
+bpy.ops.mesh.primitive_monkey_add()
+_suz = bpy.context.object
+bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
+_b = bmesh.from_edit_mesh(_suz.data)
+_sz = ER._valid_circles(ER._find_circles([v for v in _b.verts if v.select]))
+check("suzanne -> a stable handful of rings, no invented ones",
+      8 <= len(_sz) <= 20, "n=%d" % len(_sz))
+_to_object_mode()
+bpy.data.objects.remove(_suz, do_unlink=True)
+
 # a flat grid is not a circle and must stay refused through the real operator
 _to_object_mode(); _deselect_all()
 bpy.ops.mesh.primitive_grid_add(x_subdivisions=10, y_subdivisions=10)
@@ -1091,6 +1107,50 @@ check("torus -> every group a whole ring, none halved",
       "n=%d kleinster arc_span %.3f" % (len(_tv), min(_spans) if _spans else -1))
 _to_object_mode()
 bpy.data.objects.remove(_tor, do_unlink=True)
+
+
+# --- partial loop selections --------------------------------------------------
+# Selecting a loop by hand rarely catches every vertex: a box-select in wireframe
+# misses one, an ngon breaks the loop, a Shift+Alt click stops short. Leaving one
+# or two out must not change what the selection IS.
+#
+# It used to. With the top loop of a cylinder one vertex short, the fitted main
+# axis tilts a few degrees, the within-ring gaps stop being exactly zero, and the
+# knee search picks a ratio deep in the tail of the gap list — proposing thirty
+# cuts of two vertices each. That gets thrown out for having sliver clusters, and
+# with the real axis gone an in-plane axis wins instead: the tube came back carved
+# into sixteen vertical wedges at eight different radii, reported as a green
+# "16 circles set to radius 2".
+section("partial loop selections")
+
+
+def _cyl_bm(n, keep_top):
+    """Open cylinder as a loose bmesh: whole bottom loop + `keep_top` of the top."""
+    _to_object_mode(); _deselect_all()
+    bpy.ops.mesh.primitive_cylinder_add(vertices=n, radius=1.0, depth=2.0,
+                                        end_fill_type='NOTHING')
+    _o = bpy.context.object
+    _b = bmesh.new(); _b.from_mesh(_o.data); _b.verts.ensure_lookup_table()
+    bpy.data.objects.remove(_o, do_unlink=True)
+    _bot = [_v for _v in _b.verts if _v.co.z < 0]
+    _top = sorted((_v for _v in _b.verts if _v.co.z > 0),
+                  key=lambda _v: math.atan2(_v.co.y, _v.co.x))
+    return _b, _bot + _top[:keep_top]
+
+
+for _keep in (32, 31, 30, 24, 17):
+    _pb, _psel = _cyl_bm(32, _keep)
+    _pc = ER._find_circles(_psel)
+    _pv = ER._valid_circles(_pc)
+    for _vs, _f in _pv:
+        ER._apply_radius(_vs, _f[0], _f[1], 2.0)
+    _pz = {round(_v.co.z, 3) for _v in _psel}
+    _pr = sorted({round(math.hypot(_v.co.x, _v.co.y), 3) for _v in _psel})
+    check("cylinder with %d/32 of the top loop: two rings, never a wedge stack" % _keep,
+          len(_pc) <= 2 and len(_pz) == 2,
+          "%d groups (%d valid), %d z levels, radii %s"
+          % (len(_pc), len(_pv), len(_pz), _pr if len(_pr) <= 4 else "%d distinct" % len(_pr)))
+    _pb.free()
 
 
 # --- search time budget -------------------------------------------------------
