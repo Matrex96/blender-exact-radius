@@ -32,6 +32,15 @@ RESIDUAL_MAX = 0.20     # how far from a perfect circle the points may sit (rel.
 # still pass RESIDUAL_MAX, so walking on only burns time — and a walk that has
 # wandered off a ring wanders for the whole component if it is not stopped.
 STEP_MAX = 0.35
+# How many directions a ring-tracing walk tries out of its starting vertex. A
+# ring vertex has two neighbours on its ring; anything with more than a handful
+# is a pole (a triangle-fan hub has one edge per rim vertex), and rings do not
+# run through poles. See _walk_cycle.
+WALK_FANOUT = 8
+# From this walk length on, the running circle fit samples the whole path
+# instead of the last eight vertices — see _running_fit. Below it, rings behave
+# exactly as they always have.
+WIDE_FIT_FROM = 64
 
 # Blender runs an operator synchronously: while the search runs there is no Esc
 # and no progress bar, so a search that takes minutes is indistinguishable from
@@ -49,6 +58,7 @@ class SearchTimeout(Exception):
 
 
 _deadline = None        # set for the duration of a search, else None
+_UNSET = object()       # "argument not given" where None is a real value
 
 
 def _tick():
@@ -405,6 +415,31 @@ def _is_ring_cycle(cyc):
     return _is_full_ring(cyc, _fit_circle(cyc)) and _evenly_turning(cyc)
 
 
+def _running_fit(path):
+    """The circle traced so far, sampled across the whole walk.
+
+    Eight CONSECUTIVE vertices of a dense ring are collinear to float precision,
+    so _fit_circle rejects them and hands back None. That silently disarmed the
+    STEP_MAX brake below (it can only judge a step against a fit that exists),
+    and every walk then ran its full course instead of giving up after a few
+    steps — a 1024-vertex triangle-fan disc took 1.1 s, 2048 several minutes.
+
+    Spreading the same eight samples over the entire path keeps a real arc under
+    the fit at any resolution, and the count stays fixed so the fit itself does
+    not get more expensive as the walk grows.
+
+    Only once the walk is long enough to have run into that problem, though.
+    Eight neighbours of an ordinary ring bend perfectly well, and widening the
+    window there would change which vertex gets picked on every small ring in
+    every mesh — for no gain, since nothing was wrong with those. So below
+    WIDE_FIT_FROM this is exactly the plain last-eight fit it has always been.
+    """
+    if len(path) < 4:
+        return None
+    step = max(1, len(path) // 8) if len(path) >= WIDE_FIT_FROM else 1
+    return _fit_circle(path[-1::-step][:8][::-1])
+
+
 def _walk_cycle(start, sel, used):
     """The best closed walk from `start` over unused selected verts, or None.
 
@@ -423,18 +458,35 @@ def _walk_cycle(start, sel, used):
     how the mesh was built. Every direction is walked instead, and the first
     one that closes into a real ring wins; the longest closed walk is only the
     fallback.
+
+    Only up to WALK_FANOUT directions though, or the fan hub that made this
+    necessary turns around and bites: it has one edge per rim vertex, so walking
+    them all made a single call start hundreds of doomed little walks, each
+    closing a triangle that is far too short to be a ring. That, not the walk
+    length, is what made a dense lid cost seconds. Capping is safe because
+    _trace_rings offers EVERY vertex as a start: a ring missed from a pole is
+    still found from any of its own vertices, and no ordinary ring vertex has
+    that many neighbours in the first place.
     """
     fallback = None
-    for first in start.link_edges:
+    for first in list(start.link_edges)[:WALK_FANOUT]:
         second = first.other_vert(start)
         if second not in sel or second in used:
             continue
         path = [start, second]
         in_path = {start, second}
+        fit = None
         while len(path) <= len(sel):
             _tick()         # the walk is where a pathological search burns time
             v, prev = path[-1], path[-2]
-            fit = _fit_circle(path[-8:]) if len(path) >= 4 else None
+            # Refitting the running circle is the single most expensive thing in
+            # the whole search, and on a long walk it barely moves: after a few
+            # hundred vertices of a ring, one more changes it by nothing that
+            # could flip a choice. So refit every step while the path is short
+            # (small rings decide their whole shape there, and that has to stay
+            # exactly as it was) and progressively less often as it grows.
+            if len(path) % max(1, len(path) // 16) == 0:
+                fit = _running_fit(path)
             best = best_score = None
             for e in v.link_edges:
                 w = e.other_vert(v)
@@ -584,8 +636,23 @@ def _is_single_ring(verts, fit):
     their two real cycles — and like the bisector it never chops a lone ring or
     arc (a single closed walk is not accepted as a split).
     """
+    return _ring_split(verts, fit)[0]
+
+
+def _ring_split(verts, fit):
+    """(is_one_ring, parts) — the question above, plus the split it implies.
+
+    Answering "is this one ring?" means asking the bisector and the tracer to
+    take the piece apart and seeing whether either can. A caller that gets "no"
+    then wants those very pieces, and used to run both all over again to get
+    them: on a dense triangle-fan lid that doubled the entire search. Both run
+    at most once here and their answer is handed out.
+
+    `parts` is None when nothing splits off, and _UNSET when the question was
+    settled before either was run — the caller then has to split it itself.
+    """
     if not _is_usable_circle(verts, fit):
-        return False
+        return False, _UNSET
     # One closed loop that fits a whole circle IS one ring — nothing else can
     # be hiding in it. Rings stacked in a tube are joined by edges ACROSS the
     # rings, so their vertices have four neighbours, not two; and a lone loop
@@ -593,25 +660,34 @@ def _is_single_ring(verts, fit):
     # taking on its own: this is the shape of nearly every real selection, and
     # it skips both the bisector's sort of every projection and the tracer.
     if _is_simple_loop(verts) and _is_full_ring(verts, fit):
-        return True
-    return (_bisect_by_plane(verts, fit) is None
-            and _trace_rings(verts) is None)
+        return True, None
+    parts = _bisect_by_plane(verts, fit)
+    if parts is None:
+        parts = _trace_rings(verts)
+    return parts is None, parts
 
 
-def _split_leaves(verts, depth=0):
+def _split_leaves(verts, depth=0, fit=_UNSET, single=None, parts=_UNSET):
     """Recursively bisect a component into leaf groups (for stacked rings).
 
     Stops descending as soon as a group is a single clean ring, so a lone ring
     (or arc) is never chopped into arcs — but a wide, short tube that merely
-    *looks* flat is still split, via _is_single_ring.
+    *looks* flat is still split, via _ring_split.
+
+    `fit`, `single` and `parts` let a caller hand over what it already worked
+    out about `verts` — see _ring_split for why that matters.
     """
     _tick()
-    fit = _fit_circle(verts)
-    if _is_single_ring(verts, fit) or depth >= 8:
+    if fit is _UNSET:
+        fit = _fit_circle(verts)
+    if single is None:
+        single, parts = _ring_split(verts, fit)
+    if single or depth >= 8:
         return [verts]
-    parts = _bisect_by_plane(verts, fit)
-    if not parts:
-        parts = _trace_rings(verts)     # coplanar bridged rings — no axis gap
+    if parts is _UNSET:
+        parts = _bisect_by_plane(verts, fit)
+        if not parts:
+            parts = _trace_rings(verts)  # coplanar bridged rings — no axis gap
     if not parts:
         return [verts]
     out = []
@@ -634,11 +710,12 @@ def _find_circles(sel):
         for comp in _connected_groups(sel):
             _tick()
             fit = _fit_circle(comp)
-            if _is_single_ring(comp, fit):
+            single, parts = _ring_split(comp, fit)
+            if single:
                 circles.append((comp, fit))           # one clean circle
                 continue
             found = []                                # peel apart stacked rings
-            for leaf in _split_leaves(comp):
+            for leaf in _split_leaves(comp, fit=fit, single=False, parts=parts):
                 f = _fit_circle(leaf)
                 if _is_usable_circle(leaf, f):
                     found.append((leaf, f))

@@ -1301,6 +1301,30 @@ check("_find_circles: single 1024-vert ring under 20 ms", _found == 1 and _dt < 
       "%d in %.1f ms" % (_found, _dt * 1000))
 _pb.free()
 
+# Dense triangle-fan discs — the shape this whole release is about, and the one
+# that blew up. A hand-built ring skips the tracer through the _is_simple_loop
+# fast path and so never measures the walk at all; only a real fan disc does.
+# Cost must stay in the same league as the plain ring above, not explode:
+# before this was pinned, 1024 verts took 1.1 s and 2048 took over six minutes.
+def _timed_find(verts):
+    """(seconds, n_valid). A timeout yields None so it FAILS — never passes."""
+    _t = time.perf_counter()
+    try:
+        _n = len(ER._valid_circles(ER._find_circles(verts)))
+    except ER.SearchTimeout:
+        return time.perf_counter() - _t, None
+    return time.perf_counter() - _t, _n
+
+
+for _n, _limit in ((512, 0.05), (1024, 0.10), (2048, 0.25)):
+    _pb = _fan_disc_bm(_n)
+    _dt, _got = _timed_find(_pb.verts[:])
+    check("_find_circles: %d-vert triangle-fan disc under %d ms" % (_n, _limit * 1000),
+          _got == 1 and _dt < _limit,
+          "%s in %.1f ms" % ("TIMED OUT" if _got is None else "%d circles" % _got,
+                             _dt * 1000))
+    _pb.free()
+
 bpy.data.objects.remove(_perf_obj, do_unlink=True)
 
 # --- summary ------------------------------------------------------------------
