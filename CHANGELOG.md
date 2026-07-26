@@ -8,7 +8,7 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.10.2  | 2026-07-26 | — | built; a pre-release review stopped 1.10.1 — see below |
+| 1.10.2  | 2026-07-26 | 2026-07-26 | uploaded and listed (36.1 KB, Blender 4.2 LTS+) — check the store page for its review status |
 | 1.10.1  | 2026-07-25 | — | built, never uploaded — superseded by 1.10.2 |
 | 1.10.0  | 2026-07-02 | — | built, never uploaded — superseded by 1.10.1 |
 | 1.9.4   | 2026-06-28 | 2026-06-28 | **Approved 2026-06-28 — LIVE.** Addressed the reviewer's `__package__` note |
