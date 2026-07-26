@@ -1093,6 +1093,156 @@ _to_object_mode()
 bpy.data.objects.remove(_tor, do_unlink=True)
 
 
+# --- search time budget -------------------------------------------------------
+# A pathological selection can send the ring tracer on a walk lasting minutes: a
+# dense triangle-fan disc did exactly that (1024 verts took 1.1 s, 2048 several
+# minutes). Blender runs the operator synchronously, so there is no Esc and no
+# progress bar — the window stops repainting, the user kills Blender and loses
+# unsaved work. The search therefore carries a wall-clock budget and gives up
+# with a clean error instead of hanging.
+#
+# This is a SAFETY NET, not a fix. A selection that trips it is still a bug, and
+# nothing here may be read as "slow is fine": the speed section below pins the
+# real cost, and every operator check demands FINISHED — a timeout returns
+# CANCELLED and so FAILS those checks rather than quietly passing them.
+#
+# These checks expire the budget on purpose instead of leaning on a slow
+# selection, so they keep testing the net once the search gets fast.
+section("search time budget")
+
+
+def _expire_budget():
+    """Put the module in 'budget already blown' state."""
+    ER._deadline = time.perf_counter() - 1.0
+
+
+def _clear_budget():
+    ER._deadline = None
+
+
+def _fan_disc_bm(n):
+    """A real Add > Circle triangle-fan disc as a standalone bmesh."""
+    _to_object_mode()
+    _deselect_all()
+    bpy.ops.mesh.primitive_circle_add(vertices=n, radius=1.0, fill_type='TRIFAN')
+    _o = bpy.context.object
+    _bm = bmesh.new()
+    _bm.from_mesh(_o.data)
+    _bm.verts.ensure_lookup_table()
+    bpy.data.objects.remove(_o, do_unlink=True)
+    return _bm
+
+
+def _raises_timeout(fn):
+    """True if fn() gives up with SearchTimeout (any other error re-raises)."""
+    try:
+        fn()
+    except ER.SearchTimeout:
+        return True
+    return False
+
+
+check("the budget is 10 s", ER.SEARCH_BUDGET == 10.0, repr(ER.SEARCH_BUDGET))
+
+_bud_bm = _fan_disc_bm(64)
+_bud_verts = _bud_bm.verts[:]
+_bud_sel = set(_bud_verts)
+_bud_rim = [_v for _v in _bud_verts if _v.co.length > 0.5]
+
+# The net has to sit INSIDE the expensive walk, not just at the entrance to the
+# search: the fan disc that started all this is a single connected component, so
+# a check that only runs per component would never fire on it.
+_expire_budget()
+try:
+    check("_walk_cycle gives up when the budget is blown",
+          _raises_timeout(lambda: ER._walk_cycle(_bud_rim[0], _bud_sel, set())))
+    check("_trace_rings gives up when the budget is blown",
+          _raises_timeout(lambda: ER._trace_rings(_bud_verts)))
+    check("_find_circles gives up when the budget is blown",
+          _raises_timeout(lambda: ER._find_circles(_bud_verts)))
+finally:
+    _clear_budget()
+
+# ...and it must cost nothing when there is time left: same disc, same answer.
+check("a live budget leaves the result untouched",
+      len(ER._valid_circles(ER._find_circles(_bud_verts))) == 1)
+_bud_bm.free()
+
+# Self-calibrating end-to-end proof that the net actually cuts a long search
+# short: time the unbounded search, then hand it a quarter of that. Written
+# relative to the measured cost on purpose — it keeps working no matter how much
+# faster the search gets.
+_bud_bm = _fan_disc_bm(1024)
+_bud_verts = _bud_bm.verts[:]
+_t0 = time.perf_counter()
+ER._find_circles(_bud_verts)
+_full = time.perf_counter() - _t0
+
+_real_budget = ER.SEARCH_BUDGET
+ER.SEARCH_BUDGET = _full / 4.0
+try:
+    _t0 = time.perf_counter()
+    _timed_out = _raises_timeout(lambda: ER._find_circles(_bud_verts))
+    _cut = time.perf_counter() - _t0
+finally:
+    ER.SEARCH_BUDGET = _real_budget
+    _clear_budget()
+check("a long search is cut short well before it would finish",
+      _timed_out and _cut < _full / 2.0,
+      "full %.1f ms, budget %.1f ms, gave up after %.1f ms"
+      % (_full * 1000, _full / 4.0 * 1000, _cut * 1000))
+_bud_bm.free()
+
+# The operator must turn a timeout into a REPORTED error carrying the budget
+# message. (Blender turns any {'ERROR'} report into a RuntimeError on the bpy.ops
+# call, so an exception here is expected and correct — what must never happen is
+# a raw SearchTimeout escaping, which reaches the user as a bare traceback.)
+# And nothing may move on the way out.
+_deselect_all()
+_bud_obj = _ring_object("ER_budget", 16, 1.0)
+_before = [tuple(_v.co) for _v in _bud_obj.data.vertices]
+_expire_budget()
+try:
+    _res, _err = _run_operator_on([_bud_obj], _bud_obj, 0.5)
+finally:
+    _clear_budget()
+_after = [tuple(_v.co) for _v in _bud_obj.data.vertices]
+check("operator refuses the run on timeout",
+      _res == {'CANCELLED'} or _err is not None, "res=%s err=%s" % (_res, _err))
+check("operator reports the budget message, never a raw SearchTimeout",
+      "gave up after" in (_err or "") and "SearchTimeout" not in (_err or ""),
+      _err or "no error reported")
+check("geometry is untouched after a timeout", _before == _after)
+bpy.data.objects.remove(_bud_obj, do_unlink=True)
+
+# One budget for the whole run, not a fresh one per mesh — otherwise a
+# multi-object edit simply multiplies the hang by the number of objects.
+_deselect_all()
+_bud_a = _ring_object("ER_budget_a", 16, 1.0, (0, 0, 0))
+_bud_b = _ring_object("ER_budget_b", 16, 1.0, (8, 0, 0))
+_seen_deadlines = []
+_real_find = ER._find_circles
+
+
+def _deadline_spy(sel):
+    _seen_deadlines.append(ER._deadline)
+    return _real_find(sel)
+
+
+ER._find_circles = _deadline_spy
+try:
+    _res, _err = _run_operator_on([_bud_a, _bud_b], _bud_a, 0.5)
+finally:
+    ER._find_circles = _real_find
+check("every mesh in one run shares a single deadline",
+      _err is None and _res == {'FINISHED'} and len(_seen_deadlines) == 2
+      and _seen_deadlines[0] is not None
+      and _seen_deadlines[0] == _seen_deadlines[1],
+      "deadlines=%s" % (_seen_deadlines,))
+for _o in (_bud_a, _bud_b):
+    bpy.data.objects.remove(_o, do_unlink=True)
+
+
 # --- speed --------------------------------------------------------------------
 # Finding the circles is by far the most expensive thing here, and the operator
 # used to do it twice per run (once to count, once to resize) — plus a third

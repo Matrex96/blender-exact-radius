@@ -19,6 +19,7 @@ import bmesh
 import ast
 import math
 import operator as _operator
+import time
 import numpy as np
 from mathutils import Vector
 from bpy.props import FloatProperty, EnumProperty, BoolProperty
@@ -31,6 +32,51 @@ RESIDUAL_MAX = 0.20     # how far from a perfect circle the points may sit (rel.
 # still pass RESIDUAL_MAX, so walking on only burns time — and a walk that has
 # wandered off a ring wanders for the whole component if it is not stopped.
 STEP_MAX = 0.35
+
+# Blender runs an operator synchronously: while the search runs there is no Esc
+# and no progress bar, so a search that takes minutes is indistinguishable from
+# a crash and costs the user their unsaved work. The search therefore carries a
+# wall-clock budget and gives up with a reported error.
+#
+# This is a safety net, NOT a licence to be slow: any selection that reaches it
+# is a bug worth fixing. It is deliberately generous, so that hitting it always
+# means something is wrong rather than merely big.
+SEARCH_BUDGET = 10.0    # seconds
+
+
+class SearchTimeout(Exception):
+    """The circle search ran past SEARCH_BUDGET and gave up."""
+
+
+_deadline = None        # set for the duration of a search, else None
+
+
+def _tick():
+    """Give up if the search has run past its budget. Called in the hot loops."""
+    if _deadline is not None and time.perf_counter() > _deadline:
+        raise SearchTimeout
+
+
+class _budget:
+    """Run everything inside under ONE shared deadline.
+
+    Re-entrant on purpose: a multi-object edit searches once per mesh, and each
+    of those must eat from the same budget — otherwise the worst case is simply
+    multiplied by the number of objects, which is the very thing being bounded.
+    """
+
+    def __enter__(self):
+        global _deadline
+        self._outer = _deadline
+        if _deadline is None:
+            _deadline = time.perf_counter() + SEARCH_BUDGET
+        return self
+
+    def __exit__(self, *exc):
+        global _deadline
+        _deadline = self._outer
+        return False
+
 
 # Tiny safe arithmetic evaluator for the modal entry, so the user can type a
 # math expression like "20/2" (diameter -> radius). Only numbers and + - * / and
@@ -386,6 +432,7 @@ def _walk_cycle(start, sel, used):
         path = [start, second]
         in_path = {start, second}
         while len(path) <= len(sel):
+            _tick()         # the walk is where a pathological search burns time
             v, prev = path[-1], path[-2]
             fit = _fit_circle(path[-8:]) if len(path) >= 4 else None
             best = best_score = None
@@ -498,6 +545,7 @@ def _trace_rings(verts):
     sel = set(verts)
     failed = 0
     for start in verts:
+        _tick()
         if start in used or failed > 32:
             continue
         cyc = _walk_cycle(start, sel, used)
@@ -557,6 +605,7 @@ def _split_leaves(verts, depth=0):
     (or arc) is never chopped into arcs — but a wide, short tube that merely
     *looks* flat is still split, via _is_single_ring.
     """
+    _tick()
     fit = _fit_circle(verts)
     if _is_single_ring(verts, fit) or depth >= 8:
         return [verts]
@@ -577,27 +626,36 @@ def _find_circles(sel):
     Returns a list of (verts, fit); fit is None / not-a-circle for a group that
     cannot be used (counted as "skipped"). Separate rings split by connectivity;
     rings stacked in one piece split by plane clustering.
+
+    Raises SearchTimeout if the search runs past its budget (see _budget).
     """
-    circles = []
-    for comp in _connected_groups(sel):
-        fit = _fit_circle(comp)
-        if _is_single_ring(comp, fit):
-            circles.append((comp, fit))           # one clean circle
-            continue
-        found = []                                # peel apart stacked rings
-        for leaf in _split_leaves(comp):
-            f = _fit_circle(leaf)
-            if _is_usable_circle(leaf, f):
-                found.append((leaf, f))
-        if found:
-            circles.extend(found)
-        else:
-            circles.append((comp, fit))           # one un-usable group = 1 skip
-    return circles
+    with _budget():
+        circles = []
+        for comp in _connected_groups(sel):
+            _tick()
+            fit = _fit_circle(comp)
+            if _is_single_ring(comp, fit):
+                circles.append((comp, fit))           # one clean circle
+                continue
+            found = []                                # peel apart stacked rings
+            for leaf in _split_leaves(comp):
+                f = _fit_circle(leaf)
+                if _is_usable_circle(leaf, f):
+                    found.append((leaf, f))
+            if found:
+                circles.extend(found)
+            else:
+                circles.append((comp, fit))           # one un-usable group = 1 skip
+        return circles
 
 
 def _valid_circles(circles):
     return [(vs, fit) for vs, fit in circles if _is_usable_circle(vs, fit)]
+
+
+def _timeout_msg():
+    return (f"Exact Radius gave up after {SEARCH_BUDGET:g} s — this selection is "
+            "too complex to search. Select fewer vertices.")
 
 
 def _apply_radius(verts, center, normal, radius):
@@ -703,12 +761,17 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         # before the modal starts
         total = 0
         first_r = None
-        for o in _edit_meshes(context):
-            bm = bmesh.from_edit_mesh(o.data)   # keep a ref so its verts stay alive
-            valid = _valid_circles(_find_circles(_selected_verts(bm)))
-            total += len(valid)
-            if first_r is None and valid:
-                first_r = round(valid[0][1][2], 4)
+        try:
+            with _budget():     # one budget for every mesh, not one each
+                for o in _edit_meshes(context):
+                    bm = bmesh.from_edit_mesh(o.data)   # keep a ref so its verts stay alive
+                    valid = _valid_circles(_find_circles(_selected_verts(bm)))
+                    total += len(valid)
+                    if first_r is None and valid:
+                        first_r = round(valid[0][1][2], 4)
+        except SearchTimeout:
+            self.report({'ERROR'}, _timeout_msg())
+            return {'CANCELLED'}
         if total == 0:
             bm = bmesh.from_edit_mesh(context.edit_object.data)
             sel = _selected_verts(bm)
@@ -768,12 +831,18 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         # list too, so nothing collects them out from under their verts.
         found = []
         total_valid = total_circles = 0
-        for o in meshes:
-            bm = bmesh.from_edit_mesh(o.data)
-            circles = _find_circles(_selected_verts(bm))
-            found.append((o, bm, circles))
-            total_valid += len(_valid_circles(circles))
-            total_circles += len(circles)
+        try:
+            with _budget():     # one budget for every mesh, not one each
+                for o in meshes:
+                    bm = bmesh.from_edit_mesh(o.data)
+                    circles = _find_circles(_selected_verts(bm))
+                    found.append((o, bm, circles))
+                    total_valid += len(_valid_circles(circles))
+                    total_circles += len(circles)
+        except SearchTimeout:
+            # nothing has been moved yet — the search runs before every edit
+            self.report({'ERROR'}, _timeout_msg())
+            return {'CANCELLED'}
         if total_valid == 0:
             self.report({'ERROR'},
                         "Selection is not a circle — select a ring of vertices")
