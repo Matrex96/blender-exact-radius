@@ -29,6 +29,13 @@ sys.modules["exact_radius"] = ER
 _spec.loader.exec_module(ER)
 
 # --- tiny test framework ------------------------------------------------------
+# Count of checks this file is expected to run, NOT counting the final "did they
+# all run" check itself. Bump it when adding or removing checks — the same
+# discipline as bumping bl_info and the manifest together. Without it, a whole
+# block dropping out (an `if` that stops being true, an early return) just makes
+# the total smaller and still prints "0 FAILED".
+EXPECTED_CHECKS = 169
+
 _results = []
 
 
@@ -99,6 +106,20 @@ check("rejects power (DoS guard)", ER._safe_eval("9**9**9") is None)
 check("1/0 -> None (no crash)", ER._safe_eval("1/0") is None)
 check("empty -> None", ER._safe_eval("") is None)
 check("tuple '1,2' -> None", ER._safe_eval("1,2") is None)
+
+# The modal opens pre-filled with the fitted radius, and plain Enter applies
+# exactly that. So the tidying done for the header must not change the number:
+# rounding to four DECIMALS is harmless at metre scale and butchery at
+# millimetre scale, where "open the modal, press Enter" would quietly resize the
+# ring it was showing. Significant digits behave the same at every scale.
+check("prefill keeps a millimetre-scale radius intact",
+      ER._prefill_radius(0.00012) == 0.00012, repr(ER._prefill_radius(0.00012)))
+check("prefill keeps a sub-0.0001 radius off zero",
+      ER._prefill_radius(4.7e-5) == 4.7e-5, repr(ER._prefill_radius(4.7e-5)))
+check("prefill still tidies a long fitted value",
+      ER._prefill_radius(1.2345678912) == 1.234568, repr(ER._prefill_radius(1.2345678912)))
+check("prefill leaves a plain radius alone",
+      ER._prefill_radius(2.5) == 2.5, repr(ER._prefill_radius(2.5)))
 
 # --- 2. circle fit & validation ----------------------------------------------
 section("fit & validate")
@@ -863,6 +884,34 @@ check("op grid: rejected (CANCELLED / error, verts untouched)",
       "res=%s err=%s" % (res, err))
 bpy.data.objects.remove(og, do_unlink=True)
 
+# Radius 0 is the one value that destroys geometry rather than resizing it:
+# every vertex of every selected ring lands on its fitted centre, and with
+# several rings selected they all collapse at once. It has to be refused, not
+# applied — a "0 circles set to radius 0" style success gives the user no reason
+# to reach for undo. Negative values reach the same place: the modal accepts a
+# typed minus (3-5 is a legitimate expression) and used to clamp the result up
+# to 0, and the redo panel allowed 0 outright.
+for _bad in (0.0, -1.0, -0.0001):
+    _deselect_all()
+    _oz = _ring_object("ER_zero", 16, 1.0)
+    _before = [tuple(_v.co) for _v in _oz.data.vertices]
+    _res, _err = _run_operator_on([_oz], _oz, _bad)
+    _after = [tuple(_v.co) for _v in _oz.data.vertices]
+    check("radius %g is refused and moves nothing" % _bad,
+          (_res == {'CANCELLED'} or _err is not None) and _before == _after,
+          "res=%s err=%s moved=%s" % (_res, _err, _before != _after))
+    bpy.data.objects.remove(_oz, do_unlink=True)
+
+# ...while the smallest sane radius still works, so the guard is a floor and not
+# a blanket ban on tiny circles
+_deselect_all()
+_ot = _ring_object("ER_tiny", 16, 1.0)
+_res, _err = _run_operator_on([_ot], _ot, 1e-4)
+check("a tiny but positive radius still applies",
+      _err is None and _res == {'FINISHED'} and abs(_ring_radius(_ot) - 1e-4) < 1e-6,
+      "res=%s err=%s r=%.8f" % (_res, _err, _ring_radius(_ot)))
+bpy.data.objects.remove(_ot, do_unlink=True)
+
 # object transform must not matter — the radius is in LOCAL units
 _deselect_all()
 ot = _ring_object("ER_xform", 16, 1.0)
@@ -978,9 +1027,14 @@ def _to_object_mode():
     if bpy.context.mode == 'OBJECT':
         return
     try:
-        _to_object_mode()
+        bpy.ops.object.mode_set(mode='OBJECT')
     except RuntimeError:
+        # dangling / hidden active object — drop it and try once more
         bpy.context.view_layer.objects.active = None
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except RuntimeError:
+            pass
 
 
 def _primitive(add, **props):
@@ -1388,6 +1442,9 @@ for _n, _limit in ((512, 0.05), (1024, 0.10), (2048, 0.25)):
 bpy.data.objects.remove(_perf_obj, do_unlink=True)
 
 # --- summary ------------------------------------------------------------------
+check("every check in this file ran", len(_results) == EXPECTED_CHECKS,
+      "%d of %d — a block was skipped" % (len(_results), EXPECTED_CHECKS))
+
 nf = _results.count(False)
 print("\n=== %d/%d passed, %d FAILED  (Blender %s) ===" % (
     len(_results) - nf, len(_results), nf, bpy.app.version_string))

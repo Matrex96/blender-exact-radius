@@ -739,6 +739,18 @@ def _valid_circles(circles):
     return [(vs, fit) for vs, fit in circles if _is_usable_circle(vs, fit)]
 
 
+def _prefill_radius(r):
+    """The fitted radius as the modal's starting value.
+
+    Tidied so the header does not show a fit's full float tail — but by
+    SIGNIFICANT digits, not decimal places. Rounding to four decimals is
+    invisible at metre scale and butchery at millimetre scale: a 0.00012 hole
+    would open at 0.0001 and shrink by a sixth on a plain Enter, and anything
+    under 0.00005 would open at zero.
+    """
+    return float(f"{r:.7g}")
+
+
 def _timeout_msg():
     return (f"Exact Radius gave up after {SEARCH_BUDGET:g} s — this selection is "
             "too complex to search. Select fewer vertices.")
@@ -854,7 +866,7 @@ class MESH_OT_exact_radius(bpy.types.Operator):
                     valid = _valid_circles(_find_circles(_selected_verts(bm)))
                     total += len(valid)
                     if first_r is None and valid:
-                        first_r = round(valid[0][1][2], 4)
+                        first_r = _prefill_radius(valid[0][1][2])
         except SearchTimeout:
             self.report({'ERROR'}, _timeout_msg())
             return {'CANCELLED'}
@@ -882,7 +894,14 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         t = event.type
         if t in {'RET', 'NUMPAD_ENTER'}:
             val = _safe_eval(self._typed) if self._typed else self._current
-            self.radius = max(0.0, val) if val is not None else self._current
+            if val is None:                 # unparsable — keep what we had
+                val = self._current
+            if not val > 0.0:
+                # A typed minus is legitimate mid-expression ("3-5"), so this is
+                # reachable. Stay in the modal instead of applying it: execute
+                # would refuse it anyway, and the user can just carry on typing.
+                return {'RUNNING_MODAL'}
+            self.radius = val
             self._clear_header(context)
             return self.execute(context)
         if t in {'ESC', 'RIGHTMOUSE'}:
@@ -909,6 +928,15 @@ class MESH_OT_exact_radius(bpy.types.Operator):
         self._clear_header(context)
 
     def execute(self, context):
+        # Radius 0 does not resize anything, it DESTROYS: every vertex of every
+        # selected ring lands on its own fitted centre. Refuse it rather than
+        # reporting a cheerful "set to radius 0" the user has no reason to undo.
+        # Negative values arrive here as 0 (the property floor) or as a typed
+        # expression like 3-5, and mean the same thing. Written as `not > 0` so
+        # a NaN is refused too.
+        if not self.radius > 0.0:
+            self.report({'ERROR'}, "Radius must be greater than 0")
+            return {'CANCELLED'}
         meshes = _edit_meshes(context)
         # Find the circles ONCE per mesh and keep them: the counts decide
         # whether to refuse the selection at all and whether a 3D-cursor center
