@@ -8,7 +8,8 @@ released and what was uploaded to extensions.blender.org.
 
 | Version | Built | Uploaded | Store status |
 |---------|-------|----------|--------------|
-| 1.10.1  | 2026-07-25 | — | built; triangle-fan lids, and a much faster core |
+| 1.10.2  | 2026-07-26 | — | built; a pre-release review stopped 1.10.1 — see below |
+| 1.10.1  | 2026-07-25 | — | built, never uploaded — superseded by 1.10.2 |
 | 1.10.0  | 2026-07-02 | — | built, never uploaded — superseded by 1.10.1 |
 | 1.9.4   | 2026-06-28 | 2026-06-28 | **Approved 2026-06-28 — LIVE.** Addressed the reviewer's `__package__` note |
 | 1.9.3   | 2026-06-25 | 2026-06-26 | uploaded, still "Awaiting Review" — superseded by 1.9.4 |
@@ -20,6 +21,53 @@ truth is on <https://extensions.blender.org/add-ons/exact-radius/versions/> —
 every uploaded version carries its own review status there.)_
 
 ---
+
+## 1.10.2 — 2026-07-26
+
+A review before uploading 1.10.1 found two things bad enough to hold it back,
+so 1.10.1 was never submitted and this supersedes it.
+
+- Fix: **dense triangle-fan lids no longer freeze Blender.** A 2048-vertex fan
+  disc took over six minutes, and 1024 took 1.1 s where 1.9.4 needs 3 ms — on
+  exactly the shape 1.10.1 existed to support. The operator runs synchronously,
+  so that is not slowness, it is a hang: no Esc, no progress bar, and the user
+  kills Blender and loses unsaved work. Four things were paying for it. The fan
+  hub has one edge per rim vertex and the ring walk tried every one of them as
+  a starting direction, so a single call spawned hundreds of doomed little
+  walks. The walk's running circle was fitted over eight *consecutive*
+  vertices, which on a dense ring are collinear to float precision — the fit
+  came back empty and silently disarmed the brake that stops a walk wandering,
+  so every walk ran its full course. That fit was recomputed at every step
+  although on a long walk one more vertex cannot change it. And asking "is this
+  one ring?" ran the splitters, whose answer was then thrown away and computed
+  again by the caller that wanted the pieces. Now: 512 → 15 ms, 1024 → 22 ms,
+  2048 → 184 ms.
+- Fix: **a loop missing a vertex or two is no longer carved into wedges.** Hand
+  selection rarely catches every vertex — a box-select in wireframe misses one,
+  an ngon breaks the loop, a Shift+Alt click stops short. On a cylinder that
+  quietly destroyed the mesh: the tube came back as sixteen vertical wedges at
+  eight different radii, reported as a green "16 circles set". The cut-point
+  search could propose more cuts than could possibly survive the sliver test
+  that follows; those got rejected, and rejecting them discarded the *correct*
+  axis along with them, leaving an axis in the ring plane to slice the tube
+  lengthwise. It may now only propose cuts that could actually stand. The same
+  fix cures the opposite symptom, where such a selection was refused as "not a
+  circle". This bug is in 1.9.4 too, i.e. in every released version so far.
+- Fix: **radius 0 is refused instead of applied.** It never resized anything —
+  it collapsed every selected ring onto its own centre, and reported success,
+  so there was no hint to undo. Negative values reached the same place.
+- Fix: **the modal no longer quantises small radii.** Its pre-filled value was
+  rounded to four decimals, so a 0.00012 hole opened at 0.0001 and shrank by a
+  sixth on a plain Enter; under 0.00005 it opened at zero.
+- New: **the search carries a 10 s budget** and gives up with a clear error
+  rather than hanging. A safety net for whatever has not been found yet — not a
+  licence to be slow, and a check that hits it counts as a failure.
+- Tests: 142 → 170, green on 4.5.4 / 5.1.1 / 5.3.0. Real fan discs are now
+  timed (the old speed checks used hand-built rings, which take a fast path and
+  never enter the walk — which is why none of this showed). The suite also
+  stopped being able to fake a pass: the runner failed to notice when no
+  Blender was installed at all, and a whole block dropping out just made the
+  total smaller.
 
 ## 1.10.1 — 2026-07-25
 - Fix: **a perfect ring is no longer shaved.** Found on a real 96-ring model:
